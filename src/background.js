@@ -4,6 +4,7 @@ const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
 const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
 const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
 const AIRTABLE_TODAY_VIEW_ID = 'viwjzxpzCC24wtkfc';
+const AIRTABLE_DUPLICATE_VIEW_ID = 'viwhyoCkHret6DqWe';
 let CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID };
 
 let isRunning = false;
@@ -14,6 +15,12 @@ let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastErr
 let todayCount = 0;
 let lastCountAt = 0;
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // 2 minutes
+
+// Duplicate prevention cache
+let duplicateUrls = new Set();
+let duplicateCommentIds = new Set();
+let dupLastRefreshed = 0;
+const DUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Fetch the count of records in the "today" view (paginates until all rows counted)
 async function fetchTodayCount() {
@@ -50,7 +57,7 @@ function refreshTodayCount() {
 }
 
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','duplicateUrls','duplicateCommentIds','dupLastRefreshed'], (items) => {
     isRunning = !!items.isRunning;
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
@@ -63,6 +70,10 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','tod
     }
         todayCount = typeof items.todayCount === 'number' ? items.todayCount : 0;
         lastCountAt = typeof items.lastCountAt === 'number' ? items.lastCountAt : 0;
+    // restore duplicates
+    if (Array.isArray(items.duplicateUrls)) duplicateUrls = new Set(items.duplicateUrls);
+    if (Array.isArray(items.duplicateCommentIds)) duplicateCommentIds = new Set(items.duplicateCommentIds);
+    dupLastRefreshed = typeof items.dupLastRefreshed === 'number' ? items.dupLastRefreshed : 0;
     if (isRunning) {
         if (nextFireTime && Date.now() < nextFireTime) {
             const delayMs = Math.max(0, nextFireTime - Date.now());
@@ -157,6 +168,25 @@ async function processRecords() {
     }
 
     const postUrl = record.fields["Post URL"];
+    // Skip duplicates using local cache and Airtable duplicate view
+    await refreshDuplicatesIfStale();
+    if (isDuplicate(postUrl)) {
+        console.log('Duplicate detected for URL, skipping:', postUrl);
+        // Mark as done to avoid reprocessing
+        await markRecordDone(record.id, null);
+        runStats.processed += 1;
+        runStats.lastRun = Date.now();
+        runStats.lastError = null;
+        if (isRunning) {
+            nextDelay = getRandomDelay();
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ runStats, nextFireTime });
+            scheduleNext(nextDelay);
+        } else {
+            chrome.storage.local.set({ runStats });
+        }
+        return;
+    }
     const commentText = record.fields["Generated Comment"];
     console.log(`Opening LinkedIn post: ${postUrl}`);
 
@@ -172,11 +202,18 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                     target: { tabId: tab.id },
                     files: ['src/content.js']
                 }, () => {
-                    chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText });
+                    chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl });
 
                     const onResponse = function(message, senderInfo) {
                         if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
                             chrome.runtime.onMessage.removeListener(onResponse);
+                            // Record duplicates (post URL and optional commentId)
+                            if (message.postUrl) duplicateUrls.add(message.postUrl);
+                            if (message.commentId) duplicateCommentIds.add(message.commentId);
+                            chrome.storage.local.set({
+                                duplicateUrls: Array.from(duplicateUrls),
+                                duplicateCommentIds: Array.from(duplicateCommentIds)
+                            });
                             markRecordDone(record.id, tab.id).then(() => {
                                 console.log("Marked record as done in Airtable:", record.id);
                                 runStats.processed += 1;
@@ -266,4 +303,52 @@ async function markRecordDone(recordId, tabId) {
 
         }
     });
+
+// ---------- Duplicate helpers ----------
+async function fetchDuplicateUrlsFromAirtable() {
+    try {
+        let urls = new Set();
+        let offset;
+        do {
+            const params = new URLSearchParams();
+            params.set('view', AIRTABLE_DUPLICATE_VIEW_ID);
+            params.set('pageSize', '100');
+            if (offset) params.set('offset', offset);
+            const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+            const data = await res.json();
+            if (data && Array.isArray(data.records)) {
+                for (const r of data.records) {
+                    const u = r.fields && r.fields['Post URL'];
+                    if (u) urls.add(u);
+                }
+            }
+            offset = data && data.offset;
+        } while (offset);
+        return urls;
+    } catch (e) {
+        console.warn('Failed to fetch duplicate URLs', e);
+        return null;
+    }
+}
+
+async function refreshDuplicatesIfStale() {
+    const now = Date.now();
+    if (now - dupLastRefreshed < DUP_TTL_MS) return;
+    const urls = await fetchDuplicateUrlsFromAirtable();
+    if (urls) {
+        // Merge remote URLs with local ones
+        for (const u of urls) duplicateUrls.add(u);
+        dupLastRefreshed = now;
+        chrome.storage.local.set({
+            duplicateUrls: Array.from(duplicateUrls),
+            dupLastRefreshed
+        });
+    }
+}
+
+function isDuplicate(postUrl) {
+    if (!postUrl) return false;
+    return duplicateUrls.has(postUrl);
+}
 

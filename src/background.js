@@ -11,10 +11,17 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats'], (items) => {
     isRunning = !!items.isRunning;
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
-    if (isRunning && nextFireTime && Date.now() < nextFireTime) {
-        // An alarm may already exist; ensure one is scheduled
-        const delayMs = Math.max(0, nextFireTime - Date.now());
-        chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
+    if (isRunning) {
+        if (nextFireTime && Date.now() < nextFireTime) {
+            const delayMs = Math.max(0, nextFireTime - Date.now());
+            chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
+        } else {
+            // nextFireTime missing or in the past; trigger soon
+            const soon = 1000;
+            nextFireTime = Date.now() + soon;
+            chrome.storage.local.set({ nextFireTime });
+            chrome.alarms.create('autoCommentTick', { when: Date.now() + soon });
+        }
     }
 });
 
@@ -90,10 +97,17 @@ async function processRecords() {
     console.log("Processing record:", record);
 
     if (!record) {
-        console.log("No more pending records.");
+        console.log("No pending records. Will check again later.");
         runStats.lastRun = Date.now();
         runStats.lastError = null;
-        chrome.storage.local.set({ runStats });
+        if (isRunning) {
+            nextDelay = getRandomDelay();
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ runStats, nextFireTime });
+            scheduleNext(nextDelay);
+        } else {
+            chrome.storage.local.set({ runStats });
+        }
         return;
     }
 

@@ -41,9 +41,10 @@ async function loadConfig() { return CONFIG; }
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "start") {
         if (isRunning) return;
-    loadConfig().then(() => {
+        loadConfig().then(() => {
             isRunning = true;
-            nextDelay = getRandomDelay();
+            // Run soon (2 seconds) for immediate feedback
+            nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ isRunning, nextFireTime });
             scheduleNext(nextDelay);
@@ -81,7 +82,7 @@ async function processRecords() {
         runStats.lastRun = Date.now();
         runStats.lastError = null;
         if (isRunning) {
-            nextDelay = getRandomDelay();
+                nextDelay = getRandomDelay(); // Random delay between 7 and 10 minutes
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);

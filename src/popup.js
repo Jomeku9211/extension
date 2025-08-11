@@ -34,7 +34,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const errorRow = document.getElementById('errorRow');
     const lockRow = document.getElementById('lockRow');
     const acctHint = document.getElementById('acctHint');
-    const todayPostsEl = document.getElementById('todayPosts');
 
     let countdownId = null;
     let lastNextFireTime = null;
@@ -135,7 +134,6 @@ document.addEventListener('DOMContentLoaded', () => {
             updateTimerUI(null);
             updateStatsUI({ processed: 0, successes: 0, failures: 0 }, null, null);
             checkAndShowLock(null);
-            renderTodayPosts(null, []);
             return;
         }
         chrome.runtime.sendMessage({ action: 'getStatus', account: acct }, (resp) => {
@@ -144,14 +142,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateTimerUI(null);
                 updateStatsUI(null, null, null);
                 checkAndShowLock(acct);
-                requestTodayPosts(acct);
                 return;
             }
             updateStatusUI(resp.isRunning, resp.runStats && resp.runStats.lastError);
             updateTimerUI(resp.nextFireTime);
             updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount);
             checkAndShowLock(acct);
-            requestTodayPosts(acct);
         });
     }
 
@@ -200,7 +196,10 @@ document.addEventListener('DOMContentLoaded', () => {
     startButton.disabled = !hasAccountSelected;
     acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
         pollStatus();
-    if (acct) requestTodayPosts(acct);
+        if (acct) {
+            // Force-refresh today count by asking background to update status
+            chrome.runtime.sendMessage({ action: 'getStatus', account: acct }, () => {});
+        }
     }));
 
     function getSelectedAccount() {
@@ -211,42 +210,5 @@ document.addEventListener('DOMContentLoaded', () => {
         acctRadios.forEach(r => r.checked = (r.value === val));
     }
 
-    function requestTodayPosts(acct) {
-        if (!acct) { renderTodayPosts(null, []); return; }
-        chrome.runtime.sendMessage({ action: 'getTodayPosts', account: acct }, (resp) => {
-            const posts = (resp && Array.isArray(resp.posts)) ? resp.posts : [];
-            renderTodayPosts(acct, posts);
-        });
-    }
-
-    function renderTodayPosts(acct, posts) {
-        if (!acct) {
-            todayPostsEl.innerHTML = '<div class="muted" style="font-size:11px">Select an account to load today\'s posts.</div>';
-            return;
-        }
-        if (!posts || posts.length === 0) {
-            todayPostsEl.innerHTML = '<div class="muted" style="font-size:11px">No posts yet for today.</div>';
-            return;
-        }
-        const ul = document.createElement('ul');
-        ul.style.listStyle = 'none';
-        ul.style.padding = '0';
-        ul.style.margin = '0';
-        posts.forEach(p => {
-            const li = document.createElement('li');
-            li.style.margin = '4px 0';
-            const a = document.createElement('a');
-            a.href = p.url;
-            a.textContent = p.url;
-            a.target = '_blank';
-            a.style.color = '#93c5fd';
-            a.style.textDecoration = 'none';
-            a.addEventListener('mouseover', () => a.style.textDecoration = 'underline');
-            a.addEventListener('mouseout', () => a.style.textDecoration = 'none');
-            li.appendChild(a);
-            ul.appendChild(li);
-        });
-        todayPostsEl.innerHTML = '';
-        todayPostsEl.appendChild(ul);
-    }
+    // Removed posts list; Today count is shown in stats and updates when selecting account
 });

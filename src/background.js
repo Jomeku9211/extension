@@ -231,12 +231,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
     const acct = currentAccount;
         const last = acct === 'D' ? lastCountAtD : lastCountAtA;
-        if (Date.now() - last > TODAY_COUNT_TTL_MS) {
+        const force = !!request.force;
+        if (force || Date.now() - last > TODAY_COUNT_TTL_MS) {
             refreshTodayCount(acct);
         }
         const count = acct === 'D' ? todayCountD : todayCountA;
     sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount: count });
         // No need to return true, since sendResponse is synchronous here
+    }
+    else if (request.action === 'refreshTodayCount') {
+        const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
+        refreshTodayCount(acct);
+        sendResponse({ ok: true });
     }
     else if (request.action === 'getTodayPosts') {
         const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;

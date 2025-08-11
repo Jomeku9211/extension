@@ -315,10 +315,24 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                 // Try to send message; if it fails due to missing CS, inject once and retry
                 const sendPost = () => chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl }, () => {
                     if (chrome.runtime.lastError) {
-                        // Fallback: inject once
-                        chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/content.js'] }, () => {
-                            chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl });
-                        });
+                        // Fallback: inject once (ensure lowercase chrome)
+                        try {
+                            chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/content.js'] }, () => {
+                                if (chrome.runtime.lastError) {
+                                    const injMsg = chrome.runtime.lastError.message || 'unknown injection error';
+                                    console.warn('Content script injection failed:', injMsg);
+                                    runStats.lastError = `Content script injection failed: ${injMsg}`;
+                                    chrome.storage.local.set({ runStats });
+                                    return;
+                                }
+                                chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl });
+                            });
+                        } catch (e) {
+                            const injErr = (e && e.message) ? e.message : String(e);
+                            console.warn('chrome.scripting.executeScript threw', injErr);
+                            runStats.lastError = `Content script injection error: ${injErr}`;
+                            chrome.storage.local.set({ runStats });
+                        }
                     }
                 });
                 sendPost();

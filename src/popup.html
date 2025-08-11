@@ -64,6 +64,16 @@
                     <div id="status" class="badge status-inactive">Inactive</div>
                     <div id="timer" class="timer">Next: --:--</div>
                 </div>
+                <div id="errorRow" class="muted" style="font-size:11px; margin-top:4px; display:none;"></div>
+                <div id="lockRow" class="muted" style="font-size:11px; margin-top:4px; display:none; color:#fca5a5;">Account is active on another browser.</div>
+
+                <div class="row" style="margin-top:8px">
+                    <div class="muted" style="font-size:12px">Account</div>
+                    <div>
+                        <label style="font-size:12px; margin-right:6px"><input type="radio" name="acct" value="A"> A</label>
+                        <label style="font-size:12px"><input type="radio" name="acct" value="D"> D</label>
+                    </div>
+                </div>
 
                         <div id="stats" class="stat-grid">
                     <div class="stat">
@@ -88,7 +98,7 @@
                             </div>
                 </div>
 
-                <button id="start-button" class="btn-start">Start</button>
+                <button id="start-button" class="btn-start" disabled>Start</button>
                 <button id="stop-button" class="btn-stop hidden">Stop</button>
             </div>
     

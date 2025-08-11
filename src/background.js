@@ -3,7 +3,9 @@ const AIRTABLE_API_KEY = 'patFClficxpGIUnJF.be5a51a7e3fabe7337cd2cb13dc3f10234fc
 const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
 const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
 const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
-const AIRTABLE_TODAY_VIEW_ID = 'viwjzxpzCC24wtkfc';
+// Per-account "today" views
+const AIRTABLE_TODAY_VIEW_ID_D = 'viwjzxpzCC24wtkfc';
+const AIRTABLE_TODAY_VIEW_ID_A = 'viwX2GldbNBTv1ho3';
 const AIRTABLE_DUPLICATE_VIEW_ID = 'viwhyoCkHret6DqWe';
 let CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID };
 
@@ -12,8 +14,12 @@ let nextDelay = null;
 let nextFireTime = null;
 let startedAt = null;
 let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
-let todayCount = 0;
-let lastCountAt = 0;
+let currentAccount = 'A';
+let instanceId = null;
+let todayCountA = 0;
+let todayCountD = 0;
+let lastCountAtA = 0;
+let lastCountAtD = 0;
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 // Duplicate prevention cache
@@ -23,13 +29,14 @@ let dupLastRefreshed = 0;
 const DUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Fetch the count of records in the "today" view (paginates until all rows counted)
-async function fetchTodayCount() {
+async function fetchTodayCount(acct) {
     try {
         let count = 0;
         let offset = undefined;
         do {
             const params = new URLSearchParams();
-            params.set('view', AIRTABLE_TODAY_VIEW_ID);
+            const viewId = acct === 'D' ? AIRTABLE_TODAY_VIEW_ID_D : AIRTABLE_TODAY_VIEW_ID_A;
+            params.set('view', viewId);
             params.set('pageSize', '100');
             if (offset) params.set('offset', offset);
             const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
@@ -40,36 +47,47 @@ async function fetchTodayCount() {
             }
             offset = data && data.offset;
         } while (offset);
-        todayCount = count;
-        lastCountAt = Date.now();
-        chrome.storage.local.set({ todayCount, lastCountAt });
+        if (acct === 'D') {
+            todayCountD = count;
+            lastCountAtD = Date.now();
+        } else {
+            todayCountA = count;
+            lastCountAtA = Date.now();
+        }
+        chrome.storage.local.set({ todayCountA, todayCountD, lastCountAtA, lastCountAtD });
         return count;
     } catch (e) {
         console.warn('Failed to fetch today count', e);
-        return todayCount;
+        return acct === 'D' ? todayCountD : todayCountA;
     }
 }
 
-function refreshTodayCount() {
+function refreshTodayCount(acct) {
     // Debounce frequent fetches using TTL
-    if (Date.now() - lastCountAt < 10 * 1000) return; // 10s safety
-    fetchTodayCount();
+    const last = acct === 'D' ? lastCountAtD : lastCountAtA;
+    if (Date.now() - last < 10 * 1000) return; // 10s safety
+    fetchTodayCount(acct);
 }
 
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','duplicateUrls','duplicateCommentIds','dupLastRefreshed'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCountA','todayCountD','lastCountAtA','lastCountAtD','duplicateUrls','duplicateCommentIds','dupLastRefreshed','selectedAccount','instanceId'], (items) => {
     isRunning = !!items.isRunning;
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
     startedAt = items.startedAt || null;
+    currentAccount = items.selectedAccount === 'D' ? 'D' : 'A';
+    instanceId = items.instanceId || `${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+    chrome.storage.local.set({ instanceId });
         if (!isRunning) {
         // Ensure clean slate when idle
         runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
         startedAt = null;
         chrome.storage.local.set({ runStats, startedAt });
     }
-        todayCount = typeof items.todayCount === 'number' ? items.todayCount : 0;
-        lastCountAt = typeof items.lastCountAt === 'number' ? items.lastCountAt : 0;
+    todayCountA = typeof items.todayCountA === 'number' ? items.todayCountA : 0;
+    todayCountD = typeof items.todayCountD === 'number' ? items.todayCountD : 0;
+    lastCountAtA = typeof items.lastCountAtA === 'number' ? items.lastCountAtA : 0;
+    lastCountAtD = typeof items.lastCountAtD === 'number' ? items.lastCountAtD : 0;
     // restore duplicates
     if (Array.isArray(items.duplicateUrls)) duplicateUrls = new Set(items.duplicateUrls);
     if (Array.isArray(items.duplicateCommentIds)) duplicateCommentIds = new Set(items.duplicateCommentIds);
@@ -85,12 +103,13 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','tod
             chrome.storage.local.set({ nextFireTime });
             chrome.alarms.create('autoCommentTick', { when: Date.now() + soon });
         }
-    // Warm up today's count
-    refreshTodayCount();
+    // Warm up today's counts
+    refreshTodayCount('A');
+    refreshTodayCount('D');
     }
         else {
             // idle: ensure UI shows zeros and not stale counts
-            chrome.storage.local.set({ runStats, startedAt, todayCount });
+            chrome.storage.local.set({ runStats, startedAt, todayCountA, todayCountD, lastCountAtA, lastCountAtD });
         }
 });
 
@@ -105,11 +124,24 @@ async function loadConfig() { return CONFIG; }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "start") {
+        if (request.account === 'D' || request.account === 'A') {
+            currentAccount = request.account;
+            chrome.storage.local.set({ selectedAccount: currentAccount });
+        }
         loadConfig().then(() => {
+            // Acquire cross-browser lock before starting
+            acquireAccountLock(currentAccount).then((locked) => {
+                if (!locked) {
+                    runStats.lastError = `Account ${currentAccount} is active on another browser`;
+                    isRunning = false;
+                    chrome.storage.local.set({ runStats, isRunning });
+                    return;
+                }
             // Always treat Start as a fresh session
             isRunning = true;
             runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
             startedAt = Date.now();
+            console.log('Starting auto-commenter for account:', currentAccount);
             // Immediate kickoff
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
@@ -117,22 +149,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
                 scheduleNext(nextDelay);
             });
-            refreshTodayCount();
+            refreshTodayCount(currentAccount);
+            });
         });
     } 
     else if (request.action === "stop") {
+        if (request.account === 'D' || request.account === 'A') {
+            currentAccount = request.account;
+            chrome.storage.local.set({ selectedAccount: currentAccount });
+        }
         isRunning = false;
         nextFireTime = null;
         startedAt = null;
         chrome.alarms.clear('autoCommentTick');
     runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
     chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+    releaseAccountLock(currentAccount).catch(()=>{});
+    }
+    else if (request.action === 'checkLock') {
+        const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
+        checkAccountLock(acct).then((res) => {
+            sendResponse(res);
+        }).catch((e) => {
+            sendResponse({ isLockedByOther: false, heldBySelf: false, error: String(e && e.message ? e.message : e) });
+        });
+        return true; // async
     }
     else if (request.action === "getStatus") {
-        if (Date.now() - lastCountAt > TODAY_COUNT_TTL_MS) {
-            refreshTodayCount();
+        if (request.account === 'D' || request.account === 'A') {
+            currentAccount = request.account;
         }
-        sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount });
+    const acct = currentAccount;
+        const last = acct === 'D' ? lastCountAtD : lastCountAtA;
+        if (Date.now() - last > TODAY_COUNT_TTL_MS) {
+            refreshTodayCount(acct);
+        }
+        const count = acct === 'D' ? todayCountD : todayCountA;
+    sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount: count });
         // No need to return true, since sendResponse is synchronous here
     }
 });
@@ -149,15 +202,31 @@ async function processRecords() {
         if (!CONFIG) return;
     }
 
-    const record = await getNextPendingRecord();
+    // Atomically claim a record for this account to avoid both accounts picking the same
+    const record = await claimNextRecord(currentAccount);
     console.log("Processing record:", record);
 
     if (!record) {
-        console.log("No pending records. Will check again later.");
+        console.log("No pending records in Airtable. Stopping.");
         runStats.lastRun = Date.now();
-        runStats.lastError = null;
+        runStats.lastError = 'No records in Airtable';
+        // Stop the worker and clear next alarm
+        isRunning = false;
+        nextFireTime = null;
+        startedAt = null;
+        chrome.alarms.clear('autoCommentTick');
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+    releaseAccountLock(currentAccount).catch(()=>{});
+        return;
+    }
+
+    // Verify we still own this record after claiming (race protection)
+    const owns = await verifyOwnership(record.id, currentAccount);
+    if (!owns) {
+        console.log('Lost claim to another worker, skipping record:', record.id);
+        runStats.lastRun = Date.now();
         if (isRunning) {
-                nextDelay = getRandomDelay(); // Random delay between 7 and 10 minutes
+            nextDelay = getRandomDelay();
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);
@@ -168,12 +237,12 @@ async function processRecords() {
     }
 
     const postUrl = record.fields["Post URL"];
-    // Skip duplicates using local cache and Airtable duplicate view
+    // Check duplicates after claiming
     await refreshDuplicatesIfStale();
     if (isDuplicate(postUrl)) {
         console.log('Duplicate detected for URL, skipping:', postUrl);
-        // Mark as done to avoid reprocessing
-        await markRecordDone(record.id, null);
+        // Mark as done and clear in-progress to avoid reprocessing by either account
+        await finalizeRecord(record.id, currentAccount, null);
         runStats.processed += 1;
         runStats.lastRun = Date.now();
         runStats.lastError = null;
@@ -219,15 +288,21 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                 duplicateUrls: Array.from(duplicateUrls),
                                 duplicateCommentIds: Array.from(duplicateCommentIds)
                             });
-                            markRecordDone(record.id, tab.id).then(() => {
+                            finalizeRecord(record.id, currentAccount, tab.id).then(() => {
                                 console.log("Marked record as done in Airtable:", record.id);
                                 runStats.processed += 1;
                                 runStats.successes += 1;
                                 runStats.lastRun = Date.now();
                                 runStats.lastError = null;
-                                // Optimistically increment today's count
-                                todayCount += 1;
-                                lastCountAt = Date.now();
+                                // Optimistically increment today's count for this account
+                                if (currentAccount === 'D') {
+                                    todayCountD += 1;
+                                    lastCountAtD = Date.now();
+                                } else {
+                                    todayCountA += 1;
+                                    lastCountAtA = Date.now();
+                                }
+                                chrome.storage.local.set({ todayCountA, todayCountD, lastCountAtA, lastCountAtD });
                                 if (isRunning) {
                                     nextDelay = getRandomDelay();
                                     nextFireTime = Date.now() + nextDelay;
@@ -248,25 +323,31 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
 
 async function getNextPendingRecord() {
     const { AIRTABLE_API_KEY } = CONFIG || {};
-    const params = new URLSearchParams();
-    if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
-    params.set('pageSize', '1');
-    // Optional filter to only fetch records not marked as done
-    params.set('filterByFormula', 'NOT({Comment Done})');
-    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
-    const response = await fetch(url, {
-        headers: {
-            Authorization: `Bearer ${AIRTABLE_API_KEY}`
-        }
-    });
-    const data = await response.json();
-    console.log("Fetched records from Airtable:", data);
+    async function fetchWithFormula(formula) {
+        const params = new URLSearchParams();
+        if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
+        params.set('pageSize', '1');
+        if (formula) params.set('filterByFormula', formula);
+        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+        const json = await res.json();
+        return { ok: res.ok, json };
+    }
 
-    if (!data.records) {
-        console.error("Airtable API error or misconfiguration:", data);
+    // Try strict formula first (requires In Progress field); then fallback
+    try {
+        let { ok, json } = await fetchWithFormula('AND(NOT({Comment Done}), NOT({In Progress}))');
+        if (!ok || !json.records) {
+            console.warn('Strict formula failed or no records; falling back to NOT({Comment Done})', json && json.error);
+            ({ ok, json } = await fetchWithFormula('NOT({Comment Done})'));
+        }
+        console.log('Fetched records from Airtable:', json);
+        if (!json || !json.records) return null;
+        return json.records.length > 0 ? json.records[0] : null;
+    } catch (e) {
+        console.error('Airtable fetch error', e);
         return null;
     }
-    return data.records.length > 0 ? data.records[0] : null;
 }
 
 async function markRecordDone(recordId, tabId) {
@@ -288,6 +369,58 @@ async function markRecordDone(recordId, tabId) {
         chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
     }
 }
+
+// Attempt to claim a record for the current account by marking In Progress and Picked By
+async function claimNextRecord(acct) {
+    const rec = await getNextPendingRecord();
+    if (!rec) return null;
+    const id = rec.id;
+    try {
+        const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${id}`, {
+            method: 'PATCH',
+            headers: {
+                Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': acct } })
+        });
+    if (!res.ok) throw new Error('Claim failed');
+        return rec;
+    } catch (e) {
+        console.warn('Failed to claim record; another worker may have it', e);
+        return null;
+    }
+}
+
+// Mark the record as done and stamp the account that posted it; clear in-progress
+async function finalizeRecord(recordId, acct, tabId) {
+    const commenter = acct === 'D' ? 'Dheeraj' : 'Abhilasha';
+    await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
+        method: 'PATCH',
+        headers: {
+            Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ fields: { 'Comment Done': true, 'In Progress': false, 'Picked By': acct, 'Comment By': commenter } })
+    });
+    if (tabId) {
+        chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
+    }
+}
+
+// Verify that this account still owns the record (Picked By matches and In Progress is true)
+async function verifyOwnership(recordId, acct) {
+    try {
+        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+        const data = await res.json();
+        const fields = data && data.fields ? data.fields : {};
+        return fields['In Progress'] === true && fields['Picked By'] === acct;
+    } catch (e) {
+        console.warn('verifyOwnership failed', e);
+        return false;
+    }
+}
     // Handle the alarm tick to resume work even if the service worker was suspended
     chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm && alarm.name === 'autoCommentTick') {
@@ -304,6 +437,8 @@ async function markRecordDone(recordId, tabId) {
                 chrome.storage.local.set({ nextFireTime });
                 scheduleNext(nextDelay);
             });
+            // Heartbeat the lock while active
+            heartbeatAccountLock(currentAccount).catch(()=>{});
 
         }
     });
@@ -354,5 +489,110 @@ async function refreshDuplicatesIfStale() {
 function isDuplicate(postUrl) {
     if (!postUrl) return false;
     return duplicateUrls.has(postUrl);
+}
+
+// ---------- Cross-browser Account Lock using existing fields (In Progress / Picked By) ----------
+function lockKeyFor(acct) { return acct === 'D' ? 'LOCK_D' : 'LOCK_A'; }
+
+async function getOrCreateLockRecord(acct) {
+    const key = lockKeyFor(acct);
+    const findParams = new URLSearchParams();
+    findParams.set('filterByFormula', `{Post URL}='${key}'`);
+    findParams.set('pageSize', '1');
+    const findUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${findParams.toString()}`;
+    const headers = { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' };
+    const res = await fetch(findUrl, { headers });
+    const data = await res.json();
+    if (data && Array.isArray(data.records) && data.records.length > 0) return data.records[0];
+    // Create a lock record (assumes fields 'Post URL', 'In Progress', 'Picked By' exist)
+    const createUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}`;
+    const body = { records: [{ fields: { 'Post URL': key, 'In Progress': false, 'Picked By': '' } }] };
+    const cres = await fetch(createUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+    const cjson = await cres.json();
+    return cjson && Array.isArray(cjson.records) ? cjson.records[0] : null;
+}
+
+function parsePickedBy(pickedBy) {
+    // format: `${instanceId}:${timestamp}`
+    if (!pickedBy || typeof pickedBy !== 'string') return { holder: '', ts: 0 };
+    const [holder, tsStr] = pickedBy.split(':');
+    const ts = parseInt(tsStr, 10);
+    return { holder: holder || '', ts: Number.isFinite(ts) ? ts : 0 };
+}
+
+async function acquireAccountLock(acct) {
+    try {
+        const rec = await getOrCreateLockRecord(acct);
+        if (!rec) return false;
+        const fields = rec.fields || {};
+        const active = !!fields['In Progress'];
+        const { holder, ts } = parsePickedBy(fields['Picked By']);
+        const now = Date.now();
+        const stale = !ts || now - ts > 2 * 60 * 1000; // 2 min stale
+        if (active && holder !== instanceId && !stale) {
+            return false; // held by someone else
+        }
+        const newPickedBy = `${instanceId}:${Date.now()}`;
+        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': newPickedBy } })
+        });
+        return true;
+    } catch (e) {
+        console.warn('acquireAccountLock failed', e);
+        return false;
+    }
+}
+
+async function heartbeatAccountLock(acct) {
+    try {
+        const rec = await getOrCreateLockRecord(acct);
+        if (!rec) return;
+        const fields = rec.fields || {};
+        const { holder } = parsePickedBy(fields['Picked By']);
+        if (holder !== instanceId) return;
+        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': `${instanceId}:${Date.now()}` } })
+        });
+    } catch (e) {
+        console.warn('heartbeatAccountLock failed', e);
+    }
+}
+
+async function releaseAccountLock(acct) {
+    try {
+        const rec = await getOrCreateLockRecord(acct);
+        if (!rec) return;
+        const fields = rec.fields || {};
+        const { holder } = parsePickedBy(fields['Picked By']);
+        if (holder && holder !== instanceId) return; // don't release others
+        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fields: { 'In Progress': false, 'Picked By': '' } })
+        });
+    } catch (e) {
+        console.warn('releaseAccountLock failed', e);
+    }
+}
+
+async function checkAccountLock(acct) {
+    try {
+        const rec = await getOrCreateLockRecord(acct);
+        if (!rec) return { isLockedByOther: false, heldBySelf: false };
+        const fields = rec.fields || {};
+        const active = !!fields['In Progress'];
+        const { holder, ts } = parsePickedBy(fields['Picked By']);
+        const now = Date.now();
+        const stale = !ts || now - ts > 2 * 60 * 1000;
+        const heldBySelf = active && holder === instanceId && !stale;
+        const isLockedByOther = active && holder !== instanceId && !stale;
+        return { isLockedByOther, heldBySelf };
+    } catch (e) {
+        return { isLockedByOther: false, heldBySelf: false, error: String(e && e.message ? e.message : e) };
+    }
 }
 

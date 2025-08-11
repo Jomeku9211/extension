@@ -8,12 +8,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const failuresEl = document.getElementById('stat-failures');
     const todayEl = document.getElementById('stat-today');
         const startedAtEl = document.getElementById('stat-startedAt');
+    const acctRadios = Array.from(document.querySelectorAll('input[name="acct"]'));
+    const errorRow = document.getElementById('errorRow');
+    const lockRow = document.getElementById('lockRow');
 
     let countdownId = null;
     let lastNextFireTime = null;
         let lastStartedAt = null;
+    let hasAccountSelected = false;
 
-    function updateStatusUI(isActive) {
+    function updateStatusUI(isActive, lastError) {
         statusDiv.textContent = isActive ? 'Active' : 'Inactive';
         statusDiv.classList.toggle('status-active', !!isActive);
         statusDiv.classList.toggle('status-inactive', !isActive);
@@ -22,6 +26,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const stopBtn = document.getElementById('stop-button');
         stopBtn.classList.toggle('hidden', !isActive);
         stopBtn.disabled = !isActive;
+        // Disable Start if no account selected
+        startButton.disabled = !hasAccountSelected || !!isActive;
+        // Error display
+        if (!isActive && lastError) {
+            errorRow.style.display = 'block';
+            errorRow.textContent = `Reason: ${lastError}`;
+        } else {
+            errorRow.style.display = 'none';
+            errorRow.textContent = '';
+        }
+    }
+
+    async function checkAndShowLock(acct) {
+        if (!acct) { lockRow.style.display = 'none'; return; }
+        chrome.runtime.sendMessage({ action: 'checkLock', account: acct }, (resp) => {
+            if (resp && resp.isLockedByOther) {
+                lockRow.style.display = 'block';
+                startButton.disabled = true;
+            } else {
+                lockRow.style.display = 'none';
+                startButton.disabled = !hasAccountSelected;
+            }
+        });
     }
 
     function updateTimerUI(nextFireTime) {
@@ -41,7 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
         failuresEl.textContent = rs.failures || 0;
-                todayEl.textContent = typeof todayCount === 'number' ? todayCount : (todayEl.textContent || 0);
+                todayEl.textContent = hasAccountSelected && typeof todayCount === 'number' ? todayCount : '--';
                 lastStartedAt = startedAt || null;
                 renderStartedAt();
     }
@@ -73,21 +100,35 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
     function pollStatus() {
-        chrome.runtime.sendMessage({ action: 'getStatus' }, (resp) => {
+        const acct = getSelectedAccount();
+        hasAccountSelected = !!acct;
+        // If no account, show placeholders and bail
+        if (!hasAccountSelected) {
+            updateStatusUI(false, null);
+            updateTimerUI(null);
+            updateStatsUI({ processed: 0, successes: 0, failures: 0 }, null, null);
+            checkAndShowLock(null);
+            return;
+        }
+        chrome.runtime.sendMessage({ action: 'getStatus', account: acct }, (resp) => {
             if (!resp) {
-                updateStatusUI(false);
+                updateStatusUI(false, null);
                 updateTimerUI(null);
-                updateStatsUI(null);
+                updateStatsUI(null, null, null);
+                checkAndShowLock(acct);
                 return;
             }
-            updateStatusUI(resp.isRunning);
+            updateStatusUI(resp.isRunning, resp.runStats && resp.runStats.lastError);
             updateTimerUI(resp.nextFireTime);
             updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount);
+            checkAndShowLock(acct);
         });
     }
 
     startButton.addEventListener('click', () => {
-        chrome.runtime.sendMessage({ action: 'start' });
+        const acct = getSelectedAccount();
+        if (!acct) { startButton.disabled = true; return; }
+        chrome.runtime.sendMessage({ action: 'start', account: acct });
         pollStatus();
         if (!countdownId) countdownId = setInterval(() => {
             if (lastNextFireTime) updateTimerUI(lastNextFireTime);
@@ -98,7 +139,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     stopButton.addEventListener('click', () => {
-        chrome.runtime.sendMessage({ action: 'stop' });
+        chrome.runtime.sendMessage({ action: 'stop', account: getSelectedAccount() });
         pollStatus();
         if (countdownId) { clearInterval(countdownId); countdownId = null; }
         startButton.disabled = false;
@@ -107,9 +148,33 @@ document.addEventListener('DOMContentLoaded', () => {
         // Options removed – API key and IDs are fixed in code.
 
     // Initial poll and ticking
-    pollStatus();
+    // Load saved account (do not default; require explicit user selection)
+    chrome.storage.local.get(['selectedAccount'], (it) => {
+        const val = (it.selectedAccount === 'A' || it.selectedAccount === 'D') ? it.selectedAccount : null;
+        if (val) setSelectedAccount(val);
+        hasAccountSelected = !!val;
+        startButton.disabled = !hasAccountSelected;
+        pollStatus();
+    });
     countdownId = setInterval(() => {
         if (lastNextFireTime) updateTimerUI(lastNextFireTime);
         renderStartedAt();
     }, 1000);
+
+    // account selection handlers
+    acctRadios.forEach(r => r.addEventListener('change', () => {
+        const acct = getSelectedAccount();
+        hasAccountSelected = !!acct;
+        chrome.storage.local.set({ selectedAccount: acct || null });
+        startButton.disabled = !hasAccountSelected;
+        pollStatus();
+    }));
+
+    function getSelectedAccount() {
+        const sel = acctRadios.find(r => r.checked);
+        return sel ? sel.value : null;
+    }
+    function setSelectedAccount(val) {
+        acctRadios.forEach(r => r.checked = (r.value === val));
+    }
 });

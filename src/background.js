@@ -28,6 +28,23 @@ let duplicateCommentIds = new Set();
 let dupLastRefreshed = 0;
 const DUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
+// ---------- Error formatting helpers ----------
+function formatErr(e, fallback = 'Unexpected error') {
+    if (!e) return fallback;
+    if (typeof e === 'string') return e;
+    if (e && typeof e.message === 'string') return e.message;
+    try { return JSON.stringify(e); } catch { return String(e); }
+}
+function formatAirtable(json, fallback = 'Airtable error') {
+    if (!json) return fallback;
+    const err = json.error;
+    if (!err) return fallback;
+    if (typeof err === 'string') return err;
+    if (err.message) return err.message;
+    if (err.type) return err.type;
+    try { return JSON.stringify(err); } catch { return String(err); }
+}
+
 // Fetch the count of records in the "today" view (paginates until all rows counted)
 async function fetchTodayCount(acct) {
     try {
@@ -42,6 +59,12 @@ async function fetchTodayCount(acct) {
             const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
             const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
             const data = await res.json();
+            if (!res.ok) {
+                const msg = formatAirtable(data, res.statusText);
+                runStats.lastError = `Airtable Today view error: ${msg}`;
+                chrome.storage.local.set({ runStats });
+                break;
+            }
             if (data && Array.isArray(data.records)) {
                 count += data.records.length;
             }
@@ -328,18 +351,20 @@ async function getNextPendingRecord() {
         if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
         params.set('pageSize', '1');
         if (formula) params.set('filterByFormula', formula);
-        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
-        const json = await res.json();
-        return { ok: res.ok, json };
+    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+    const json = await res.json();
+    if (!res.ok) console.warn('Airtable query failed:', formatAirtable(json));
+    return { ok: res.ok, json };
     }
 
     // Try strict formula first (requires In Progress field); then fallback
     try {
-        let { ok, json } = await fetchWithFormula('AND(NOT({Comment Done}), NOT({In Progress}))');
+        const excludeLock = "AND(NOT({Post URL}='LOCK_A'), NOT({Post URL}='LOCK_D'))";
+        let { ok, json } = await fetchWithFormula(`AND(NOT({Comment Done}), NOT({In Progress}), ${excludeLock})`);
         if (!ok || !json.records) {
-            console.warn('Strict formula failed or no records; falling back to NOT({Comment Done})', json && json.error);
-            ({ ok, json } = await fetchWithFormula('NOT({Comment Done})'));
+            console.warn('Strict formula failed or no records; falling back', formatAirtable(json, 'no records'));
+            ({ ok, json } = await fetchWithFormula(`AND(NOT({Comment Done}), ${excludeLock})`));
         }
         console.log('Fetched records from Airtable:', json);
         if (!json || !json.records) return null;
@@ -384,7 +409,8 @@ async function claimNextRecord(acct) {
             },
             body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': acct } })
         });
-    if (!res.ok) throw new Error('Claim failed');
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`Claim failed: ${formatAirtable(j, res.statusText)}`);
         return rec;
     } catch (e) {
         console.warn('Failed to claim record; another worker may have it', e);
@@ -395,7 +421,7 @@ async function claimNextRecord(acct) {
 // Mark the record as done and stamp the account that posted it; clear in-progress
 async function finalizeRecord(recordId, acct, tabId) {
     const commenter = acct === 'D' ? 'Dheeraj' : 'Abhilasha';
-    await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
+    const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
         method: 'PATCH',
         headers: {
             Authorization: `Bearer ${AIRTABLE_API_KEY}`,
@@ -403,6 +429,11 @@ async function finalizeRecord(recordId, acct, tabId) {
         },
         body: JSON.stringify({ fields: { 'Comment Done': true, 'In Progress': false, 'Picked By': acct, 'Comment By': commenter } })
     });
+    if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        runStats.lastError = `Finalize failed: ${formatAirtable(j, res.statusText)}`;
+        chrome.storage.local.set({ runStats });
+    }
     if (tabId) {
         chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
     }
@@ -429,7 +460,7 @@ async function verifyOwnership(recordId, acct) {
                 console.error('processRecords error', err);
                 runStats.failures += 1;
                 runStats.lastRun = Date.now();
-                runStats.lastError = String(err && err.message ? err.message : err);
+                runStats.lastError = formatErr(err);
                 chrome.storage.local.set({ runStats });
                 // schedule a retry with a fresh delay to avoid tight loop
                 nextDelay = getRandomDelay();
@@ -456,6 +487,10 @@ async function fetchDuplicateUrlsFromAirtable() {
             const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
             const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
             const data = await res.json();
+            if (!res.ok) {
+                console.warn('Duplicate view fetch failed:', formatAirtable(data, res.statusText));
+                break;
+            }
             if (data && Array.isArray(data.records)) {
                 for (const r of data.records) {
                     const u = r.fields && r.fields['Post URL'];

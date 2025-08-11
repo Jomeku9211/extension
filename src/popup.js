@@ -8,7 +8,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const failuresEl = document.getElementById('stat-failures');
     const lastRunEl = document.getElementById('stat-lastRun');
     const lastErrorEl = document.getElementById('stat-lastError');
-    const openOptions = document.getElementById('open-options');
 
     let countdownId = null;
     let lastNextFireTime = null;
@@ -68,14 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (countdownId) { clearInterval(countdownId); countdownId = null; }
     });
 
-    openOptions.addEventListener('click', (e) => {
-        e.preventDefault();
-        if (chrome.runtime.openOptionsPage) {
-            chrome.runtime.openOptionsPage();
-        } else {
-            window.open('options.html');
-        }
-    });
+        // Options removed – API key and IDs are fixed in code.
 
     // Initial poll and ticking
     pollStatus();

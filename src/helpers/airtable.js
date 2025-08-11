@@ -1,19 +1,15 @@
 // This helper intentionally avoids storing secrets in source control.
 // You can pass config explicitly, or call with useStorage=true to read from chrome.storage.
 
-async function readConfigFromStorage() {
-    return new Promise((resolve) => {
-        chrome.storage.local.get(['AIRTABLE_API_KEY'], (items) => {
-            const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
-            const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
-            const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
-            resolve({ ...items, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID });
-        });
-    });
-}
+const FIXED_CFG = {
+    AIRTABLE_API_KEY: 'patFClficxpGIUnJF.be5a51a7e3fabe7337cd2cb13dc3f10234fc52d8a1f60e012eb68be7b2fcc982',
+    AIRTABLE_BASE_ID: 'appD9VxZrOhiQY9VB',
+    AIRTABLE_TABLE_ID: 'tblyhMPmCt87ORo3t',
+    AIRTABLE_VIEW_ID: 'viwiRzf62qaMKGQoG'
+};
 
-export async function getNextPendingRecord(cfg, useStorage = false) {
-    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = useStorage ? await readConfigFromStorage() : (cfg || {});
+export async function getNextPendingRecord(cfg) {
+    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = cfg || FIXED_CFG;
     if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) return null;
     const params = new URLSearchParams();
     if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
@@ -25,8 +21,8 @@ export async function getNextPendingRecord(cfg, useStorage = false) {
     return data && Array.isArray(data.records) && data.records.length > 0 ? data.records[0] : null;
 }
 
-export async function markRecordDone(recordId, cfg, useStorage = false) {
-    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID } = useStorage ? await readConfigFromStorage() : (cfg || {});
+export async function markRecordDone(recordId, cfg) {
+    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID } = cfg || FIXED_CFG;
     if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID || !recordId) return false;
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`;
     const response = await fetch(url, {

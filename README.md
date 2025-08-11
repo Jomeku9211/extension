@@ -38,11 +38,8 @@ linkedin-airtable-commenter
    - Enable "Developer mode" in the top right corner.
    - Click on "Load unpacked" and select the `linkedin-airtable-commenter` directory.
 
-3. **Configure Airtable (Options page):**
-    - Open Options and enter your Airtable API Key only. Base/Table/View IDs are fixed in the extension to:
-       - Base: appD9VxZrOhiQY9VB
-       - Table: tblyhMPmCt87ORo3t
-       - View: viwiRzf62qaMKGQoG
+3. **Airtable setup is preconfigured:**
+   - API key, Base, Table, and View IDs are hardcoded per your setup.
 
 ## Usage
 

@@ -1,8 +1,9 @@
-// Airtable config: fixed IDs per requested setup; API key from storage
+// Airtable config: fixed and constant
+const AIRTABLE_API_KEY = 'patFClficxpGIUnJF.be5a51a7e3fabe7337cd2cb13dc3f10234fc52d8a1f60e012eb68be7b2fcc982';
 const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
 const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
 const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
-let CONFIG = null;
+let CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID };
 
 let isRunning = false;
 let nextDelay = null;
@@ -33,33 +34,14 @@ function getRandomDelay() {
     return (7 + Math.random() * 3) * 60 * 1000;
 }
 
-async function loadConfig() {
-    return new Promise((resolve) => {
-        chrome.storage.local.get(['AIRTABLE_API_KEY'], (items) => {
-            const { AIRTABLE_API_KEY } = items || {};
-            if (!AIRTABLE_API_KEY) {
-                console.warn('Airtable API key missing. Open the extension options to configure.');
-                CONFIG = null;
-                return resolve(null);
-            }
-            CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID };
-            resolve(CONFIG);
-        });
-    });
-}
+async function loadConfig() { return CONFIG; }
 
 
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "start") {
         if (isRunning) return;
-        loadConfig().then((cfg) => {
-            if (!cfg) {
-                // Do not start without config
-                isRunning = false;
-                nextFireTime = null;
-                return;
-            }
+    loadConfig().then(() => {
             isRunning = true;
             nextDelay = getRandomDelay();
             nextFireTime = Date.now() + nextDelay;

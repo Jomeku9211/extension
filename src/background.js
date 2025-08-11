@@ -21,6 +21,11 @@ let todayCountD = 0;
 let lastCountAtA = 0;
 let lastCountAtD = 0;
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // 2 minutes
+// Today posts cache
+let todayPostsA = [];
+let todayPostsD = [];
+let lastPostsAtA = 0;
+let lastPostsAtD = 0;
 
 // Duplicate prevention cache
 let duplicateUrls = new Set();
@@ -232,6 +237,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const count = acct === 'D' ? todayCountD : todayCountA;
     sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount: count });
         // No need to return true, since sendResponse is synchronous here
+    }
+    else if (request.action === 'getTodayPosts') {
+        const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
+        getTodayPosts(acct).then((posts) => {
+            sendResponse({ posts });
+        }).catch((e) => {
+            sendResponse({ posts: [], error: formatErr(e) });
+        });
+        return true; // async
     }
 });
 
@@ -577,6 +591,63 @@ async function refreshDuplicatesIfStale() {
 function isDuplicate(postUrl) {
     if (!postUrl) return false;
     return duplicateUrls.has(postUrl);
+}
+
+// ---------- Today's posts helpers ----------
+async function fetchTodayPosts(acct) {
+    try {
+        const posts = [];
+        let offset;
+        const viewId = acct === 'D' ? AIRTABLE_TODAY_VIEW_ID_D : AIRTABLE_TODAY_VIEW_ID_A;
+        do {
+            const params = new URLSearchParams();
+            params.set('view', viewId);
+            params.set('pageSize', '100');
+            if (offset) params.set('offset', offset);
+            const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+            const data = await res.json();
+            if (!res.ok) {
+                const msg = formatAirtable(data, res.statusText);
+                runStats.lastError = `Airtable Today view error: ${msg}`;
+                chrome.storage.local.set({ runStats });
+                break;
+            }
+            if (data && Array.isArray(data.records)) {
+                for (const r of data.records) {
+                    const f = r.fields || {};
+                    const urlField = f['Post URL'];
+                    if (urlField) posts.push({ id: r.id, url: urlField, by: f['Comment By'] || null });
+                }
+            }
+            offset = data && data.offset;
+        } while (offset);
+        return posts;
+    } catch (e) {
+        const msg = formatErr(e);
+        runStats.lastError = `Airtable Today view error: ${msg}`;
+        chrome.storage.local.set({ runStats });
+        return [];
+    }
+}
+
+async function getTodayPosts(acct) {
+    const now = Date.now();
+    const last = acct === 'D' ? lastPostsAtD : lastPostsAtA;
+    const cached = acct === 'D' ? todayPostsD : todayPostsA;
+    if (now - last < TODAY_COUNT_TTL_MS && Array.isArray(cached) && cached.length >= 0) {
+        return cached;
+    }
+    const posts = await fetchTodayPosts(acct);
+    if (acct === 'D') {
+        todayPostsD = posts;
+        lastPostsAtD = now;
+    } else {
+        todayPostsA = posts;
+        lastPostsAtA = now;
+    }
+    chrome.storage.local.set({ todayPostsA, todayPostsD, lastPostsAtA, lastPostsAtD });
+    return posts;
 }
 
 // ---------- Cross-browser Account Lock using existing fields (In Progress / Picked By) ----------

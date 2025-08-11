@@ -14,7 +14,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateStatusUI(isActive) {
         statusDiv.textContent = isActive ? 'Active' : 'Inactive';
-        statusDiv.style.color = isActive ? 'green' : 'red';
+        statusDiv.classList.toggle('status-active', !!isActive);
+        statusDiv.classList.toggle('status-inactive', !isActive);
+        // Toggle buttons
+        document.getElementById('start-button').classList.toggle('hidden', !!isActive);
+        const stopBtn = document.getElementById('stop-button');
+        stopBtn.classList.toggle('hidden', !isActive);
+        stopBtn.disabled = !isActive;
     }
 
     function updateTimerUI(nextFireTime) {
@@ -59,12 +65,15 @@ document.addEventListener('DOMContentLoaded', () => {
             if (lastNextFireTime) updateTimerUI(lastNextFireTime);
             // Also occasionally poll to refresh stats
         }, 1000);
+        // Disable Start quickly to avoid double clicks
+        startButton.disabled = true;
     });
 
     stopButton.addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'stop' });
         pollStatus();
         if (countdownId) { clearInterval(countdownId); countdownId = null; }
+        startButton.disabled = false;
     });
 
         // Options removed – API key and IDs are fixed in code.

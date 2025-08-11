@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const processedEl = document.getElementById('stat-processed');
     const successesEl = document.getElementById('stat-successes');
     const failuresEl = document.getElementById('stat-failures');
+    const todayEl = document.getElementById('stat-today');
         const startedAtEl = document.getElementById('stat-startedAt');
 
     let countdownId = null;
@@ -35,11 +36,12 @@ document.addEventListener('DOMContentLoaded', () => {
         timerDiv.textContent = `Next: ${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
     }
 
-            function updateStatsUI(runStats, startedAt) {
+            function updateStatsUI(runStats, startedAt, todayCount) {
         const rs = runStats || {};
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
         failuresEl.textContent = rs.failures || 0;
+                todayEl.textContent = typeof todayCount === 'number' ? todayCount : (todayEl.textContent || 0);
                 lastStartedAt = startedAt || null;
                 renderStartedAt();
     }
@@ -80,7 +82,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             updateStatusUI(resp.isRunning);
             updateTimerUI(resp.nextFireTime);
-            updateStatsUI(resp.runStats, resp.startedAt);
+            updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount);
         });
     }
 

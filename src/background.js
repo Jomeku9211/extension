@@ -3,6 +3,7 @@ const AIRTABLE_API_KEY = 'patFClficxpGIUnJF.be5a51a7e3fabe7337cd2cb13dc3f10234fc
 const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
 const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
 const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
+const AIRTABLE_TODAY_VIEW_ID = 'viwjzxpzCC24wtkfc';
 let CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID };
 
 let isRunning = false;
@@ -10,6 +11,9 @@ let nextDelay = null;
 let nextFireTime = null;
 let startedAt = null;
 let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+let todayCount = 0;
+let lastCountAt = 0;
+const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
 // Restore state on boot
 chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt'], (items) => {
@@ -17,6 +21,14 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt'], (i
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
     startedAt = items.startedAt || null;
+        if (!isRunning) {
+        // Ensure clean slate when idle
+        runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+        startedAt = null;
+        chrome.storage.local.set({ runStats, startedAt });
+    }
+        todayCount = typeof items.todayCount === 'number' ? items.todayCount : 0;
+        lastCountAt = typeof items.lastCountAt === 'number' ? items.lastCountAt : 0;
     if (isRunning) {
         if (nextFireTime && Date.now() < nextFireTime) {
             const delayMs = Math.max(0, nextFireTime - Date.now());
@@ -28,7 +40,13 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt'], (i
             chrome.storage.local.set({ nextFireTime });
             chrome.alarms.create('autoCommentTick', { when: Date.now() + soon });
         }
+    // Warm up today's count
+    refreshTodayCount();
     }
+        else {
+            // idle: ensure UI shows zeros and not stale counts
+            chrome.storage.local.set({ runStats, startedAt, todayCount });
+        }
 });
 
 function getRandomDelay() {
@@ -54,6 +72,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
                 scheduleNext(nextDelay);
             });
+            refreshTodayCount();
         });
     } 
     else if (request.action === "stop") {
@@ -65,7 +84,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
     }
     else if (request.action === "getStatus") {
-        sendResponse({ isRunning, nextFireTime, runStats, startedAt });
+        if (Date.now() - lastCountAt > TODAY_COUNT_TTL_MS) {
+            refreshTodayCount();
+        }
+        sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount });
         // No need to return true, since sendResponse is synchronous here
     }
 });
@@ -127,6 +149,9 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                 runStats.successes += 1;
                                 runStats.lastRun = Date.now();
                                 runStats.lastError = null;
+                                // Optimistically increment today's count
+                                todayCount += 1;
+                                lastCountAt = Date.now();
                                 if (isRunning) {
                                     nextDelay = getRandomDelay();
                                     nextFireTime = Date.now() + nextDelay;
@@ -204,6 +229,40 @@ async function markRecordDone(recordId, tabId) {
                 chrome.storage.local.set({ nextFireTime });
                 scheduleNext(nextDelay);
             });
+
+            // Fetch the count of records in the "today" view
+            async function fetchTodayCount() {
+                try {
+                    let count = 0;
+                    let offset = undefined;
+                    do {
+                        const params = new URLSearchParams();
+                        params.set('view', AIRTABLE_TODAY_VIEW_ID);
+                        params.set('pageSize', '100');
+                        if (offset) params.set('offset', offset);
+                        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+                        const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+                        const data = await res.json();
+                        if (data && Array.isArray(data.records)) {
+                            count += data.records.length;
+                        }
+                        offset = data && data.offset;
+                    } while (offset);
+                    todayCount = count;
+                    lastCountAt = Date.now();
+                    chrome.storage.local.set({ todayCount, lastCountAt });
+                    return count;
+                } catch (e) {
+                    console.warn('Failed to fetch today count', e);
+                    return todayCount;
+                }
+            }
+
+            function refreshTodayCount() {
+                // Debounce frequent fetches using TTL
+                if (Date.now() - lastCountAt < 10 * 1000) return; // 10s safety
+                fetchTodayCount();
+            }
         }
     });
 

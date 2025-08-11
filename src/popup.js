@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let countdownId = null;
     let lastNextFireTime = null;
+        let lastStartedAt = null;
 
     function updateStatusUI(isActive) {
         statusDiv.textContent = isActive ? 'Active' : 'Inactive';
@@ -34,18 +35,45 @@ document.addEventListener('DOMContentLoaded', () => {
         timerDiv.textContent = `Next: ${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
     }
 
-        function updateStatsUI(runStats, startedAt) {
+            function updateStatsUI(runStats, startedAt) {
         const rs = runStats || {};
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
         failuresEl.textContent = rs.failures || 0;
-            if (startedAt) {
-                const d = new Date(startedAt);
-                startedAtEl.textContent = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-            } else {
-                startedAtEl.textContent = '--';
-            }
+                lastStartedAt = startedAt || null;
+                renderStartedAt();
     }
+
+            function formatHHMMSS(date) {
+                const hh = date.getHours().toString().padStart(2, '0');
+                const mm = date.getMinutes().toString().padStart(2, '0');
+                const ss = date.getSeconds().toString().padStart(2, '0');
+                return `${hh}:${mm}:${ss}`;
+            }
+
+            function formatAgo(ms) {
+                if (ms <= 0) return '0s ago';
+                const s = Math.floor(ms / 1000);
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                const sec = s % 60;
+                const parts = [];
+                if (h) parts.push(`${h}h`);
+                if (m) parts.push(`${m}m`);
+                parts.push(`${sec}s`);
+                return parts.join(' ') + ' ago';
+            }
+
+            function renderStartedAt() {
+                if (!lastStartedAt) {
+                    startedAtEl.textContent = '--';
+                    return;
+                }
+                const d = new Date(lastStartedAt);
+                const label = formatHHMMSS(d);
+                const ago = formatAgo(Date.now() - d.getTime());
+                startedAtEl.textContent = `${label} (${ago})`;
+            }
 
     function pollStatus() {
         chrome.runtime.sendMessage({ action: 'getStatus' }, (resp) => {
@@ -85,5 +113,6 @@ document.addEventListener('DOMContentLoaded', () => {
     pollStatus();
     countdownId = setInterval(() => {
         if (lastNextFireTime) updateTimerUI(lastNextFireTime);
+        renderStartedAt();
     }, 1000);
 });

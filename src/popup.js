@@ -32,6 +32,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const errorRow = document.getElementById('errorRow');
   const lockRow = document.getElementById('lockRow');
   const acctHint = document.getElementById('acctHint');
+  const btnProbe = document.getElementById('btn-probe');
+  const btnTick = document.getElementById('btn-tick');
+  const probeOut = document.getElementById('probe-out');
 
   let countdownId = null;
   let lastNextFireTime = null;
@@ -51,8 +54,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const shouldDisable = !hasAccountSelected || !!isActive;
     startButton.disabled = shouldDisable;
     acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
-    // Error display
-    if (!isActive && lastError) {
+  // Error display: show whenever an error exists (even if Active)
+  if (lastError) {
       errorRow.style.display = 'block';
       const msg = safeStringify(lastError) || '';
       errorRow.textContent = `Reason: ${msg}`;
@@ -201,6 +204,41 @@ document.addEventListener('DOMContentLoaded', () => {
     acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
     pollStatus(true);
   }));
+
+  // Debug: probe Airtable queries
+  if (btnProbe) {
+    btnProbe.addEventListener('click', () => {
+      const acct = getSelectedAccount();
+      probeOut.style.display = 'block';
+      probeOut.textContent = 'Probing…';
+      chrome.runtime.sendMessage({ action: 'debugProbe', account: acct || undefined }, (resp) => {
+        if (!resp) { probeOut.textContent = 'No response'; return; }
+        const out = {
+          running: resp.isRunning,
+          account: resp.account,
+          view: resp.config && resp.config.view,
+          todayCount: resp.todayCount,
+          lock: resp.lock,
+          strict: resp.probe && resp.probe.strict,
+          fallback: resp.probe && resp.probe.fallback
+        };
+        try { probeOut.textContent = JSON.stringify(out, null, 2); } catch { probeOut.textContent = String(out); }
+      });
+    });
+  }
+  // Debug: force a tick immediately if running
+  if (btnTick) {
+    btnTick.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ action: 'tickNow' }, (resp) => {
+        if (!resp || !resp.ok) {
+          probeOut.style.display = 'block';
+          probeOut.textContent = `Tick error: ${safeStringify(resp && resp.error ? resp.error : 'unknown')}`;
+        } else {
+          pollStatus(true);
+        }
+      });
+    });
+  }
 
   function getSelectedAccount() {
     const sel = acctRadios.find(r => r.checked);

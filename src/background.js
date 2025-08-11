@@ -261,6 +261,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         refreshTodayCount(acct);
         sendResponse({ ok: true });
     }
+    else if (request.action === 'debugProbe') {
+        const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
+        (async () => {
+            const lock = await checkAccountLock(acct).catch(e => ({ error: String(e && e.message ? e.message : e) }));
+            const today = await fetchTodayCount(acct).catch(() => (acct === 'D' ? todayCountD : todayCountA));
+            const probe = await probeQueries().catch(e => ({ error: String(e && e.message ? e.message : e) }));
+            sendResponse({
+                config: { view: AIRTABLE_VIEW_ID, todayA: AIRTABLE_TODAY_VIEW_ID_A, todayD: AIRTABLE_TODAY_VIEW_ID_D, dup: AIRTABLE_DUPLICATE_VIEW_ID },
+                account: acct,
+                isRunning,
+                nextFireTime,
+                startedAt,
+                runStats,
+                lock,
+                todayCount: today,
+                probe,
+            });
+        })();
+        return true;
+    }
+    else if (request.action === 'tickNow') {
+        if (!isRunning) { sendResponse({ ok: false, error: 'Not running' }); return; }
+        processRecords().then(() => sendResponse({ ok: true })).catch(e => sendResponse({ ok: false, error: formatErr(e) }));
+        return true;
+    }
     else if (request.action === 'getTodayPosts') {
         const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
         getTodayPosts(acct).then((posts) => {
@@ -522,6 +547,27 @@ async function getNextPendingRecord() {
     chrome.storage.local.set({ runStats });
         return null;
     }
+}
+
+// Probe strict and fallback queries to aid debugging without mutating state
+async function probeQueries() {
+    const { AIRTABLE_API_KEY } = CONFIG || {};
+    const excludeLock = "AND(NOT({Post URL}='LOCK_A'), NOT({Post URL}='LOCK_D'))";
+    async function once(formula) {
+        const params = new URLSearchParams();
+        if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
+        params.set('pageSize', '1');
+        if (formula) params.set('filterByFormula', formula);
+        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+        const json = await res.json();
+        if (!res.ok) return { ok: false, count: 0, url, formula, error: formatAirtable(json, res.statusText) };
+        const count = (json && Array.isArray(json.records)) ? json.records.length : 0;
+        return { ok: true, count, url, formula };
+    }
+    const strict = await once(`AND(NOT({Comment Done}), NOT({In Progress}), ${excludeLock})`);
+    const fallback = await once(`AND(NOT({Comment Done}), ${excludeLock})`);
+    return { view: AIRTABLE_VIEW_ID || null, strict, fallback };
 }
 
 async function markRecordDone(recordId, tabId) {

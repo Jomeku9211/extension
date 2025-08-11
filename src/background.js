@@ -16,6 +16,8 @@ let startedAt = null;
 let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
 let currentAccount = 'A';
 let instanceId = null;
+// Prevent overlapping runs (open 1 tab at a time)
+let isProcessingTick = false;
 let todayCountA = 0;
 let todayCountD = 0;
 let lastCountAtA = 0;
@@ -309,14 +311,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 function scheduleNext(delayMs) {
-    if (!isRunning) return;
-    chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
-    // Notify popup so it refreshes timer/stats immediately
-    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
+    if (!isRunning) { isProcessingTick = false; return; }
+    const when = Date.now() + delayMs;
+    nextFireTime = when;
+    chrome.storage.local.set({ nextFireTime });
+    chrome.alarms.clear('autoCommentTick', () => {
+        chrome.alarms.create('autoCommentTick', { when });
+        // Notify popup so it refreshes timer/stats immediately
+        try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
+        // Mark processing complete for this cycle
+        isProcessingTick = false;
+    });
 }
 
 async function processRecords() {
     if (!isRunning) return;
+    if (isProcessingTick) { console.log('processRecords: already running, skipping this tick'); return; }
+    isProcessingTick = true;
     if (!CONFIG) {
         await loadConfig();
         if (!CONFIG) return;
@@ -331,13 +342,14 @@ async function processRecords() {
         runStats.lastRun = Date.now();
         runStats.lastError = `No records in Airtable (view: ${AIRTABLE_VIEW_ID || 'default'})`;
     // Stop the worker and clear next alarm
-        isRunning = false;
+    isRunning = false;
         nextFireTime = null;
         startedAt = null;
         chrome.alarms.clear('autoCommentTick');
         chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
     try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
         releaseAccountLock(currentAccount).catch(()=>{});
+    isProcessingTick = false;
         return;
     }
     if (claim.status !== 'ok') {
@@ -349,7 +361,7 @@ async function processRecords() {
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);
             try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
-        } else {
+    } else {
             chrome.storage.local.set({ runStats });
         }
         return;
@@ -366,7 +378,7 @@ async function processRecords() {
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);
-        } else {
+    } else {
             chrome.storage.local.set({ runStats });
         }
         return;
@@ -410,10 +422,8 @@ async function processRecords() {
         runStats.lastRun = Date.now();
         runStats.lastError = reason;
         chrome.storage.local.set({ runStats });
-        if (isRunning) {
+    if (isRunning) {
             nextDelay = getRandomDelay();
-            nextFireTime = Date.now() + nextDelay;
-            chrome.storage.local.set({ nextFireTime });
             scheduleNext(nextDelay);
         }
         return;
@@ -515,8 +525,6 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                     refreshTodayCount(currentAccount);
                                     if (isRunning) {
                                         nextDelay = getRandomDelay();
-                                        nextFireTime = Date.now() + nextDelay;
-                                        chrome.storage.local.set({ nextFireTime, runStats });
                                         scheduleNext(nextDelay);
                                         try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
                                     }
@@ -528,8 +536,6 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                     chrome.storage.local.set({ runStats });
                                     if (isRunning) {
                                         nextDelay = getRandomDelay();
-                                        nextFireTime = Date.now() + nextDelay;
-                                        chrome.storage.local.set({ nextFireTime });
                                         scheduleNext(nextDelay);
                                         try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
                                     }
@@ -739,6 +745,7 @@ async function verifyOwnership(recordId, acct) {
     chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm && alarm.name === 'autoCommentTick') {
             if (!isRunning) return;
+            if (isProcessingTick) return; // avoid overlapping if alarm fires while busy
             processRecords().catch(err => {
                 console.error('processRecords error', err);
                 runStats.failures += 1;
@@ -747,8 +754,6 @@ async function verifyOwnership(recordId, acct) {
                 chrome.storage.local.set({ runStats });
                 // schedule a retry with a fresh delay to avoid tight loop
                 nextDelay = getRandomDelay();
-                nextFireTime = Date.now() + nextDelay;
-                chrome.storage.local.set({ nextFireTime });
                 scheduleNext(nextDelay);
             });
             // Heartbeat the lock while active

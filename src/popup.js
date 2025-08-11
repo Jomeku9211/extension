@@ -152,6 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
   startButton.addEventListener('click', () => {
     const acct = getSelectedAccount();
     if (!acct) { startButton.disabled = true; return; }
+    try { chrome.storage.local.set({ selectedAccount: acct }); } catch (_) {}
     chrome.runtime.sendMessage({ action: 'start', account: acct }, (resp) => {
       if (chrome.runtime.lastError) {
         updateStatusUI(false, `Start error: ${chrome.runtime.lastError.message || 'unknown'}`);
@@ -181,10 +182,25 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.runtime.sendMessage({ action: 'stop' });
   // Clear selection after stop
   clearAccountSelection();
+    try { chrome.storage.local.set({ selectedAccount: null }); } catch (_) {}
     pollStatus(true);
     if (countdownId) { clearInterval(countdownId); countdownId = null; }
     startButton.disabled = true;
   });
+
+  // On load, restore previously selected account so today's count/lock show while running
+  try {
+    chrome.storage.local.get(['selectedAccount'], (items) => {
+      const sel = items && items.selectedAccount;
+      if (sel === 'A' || sel === 'D') {
+        setSelectedAccount(sel);
+        hasAccountSelected = true;
+        startButton.disabled = false;
+        acctHint.style.display = 'none';
+        pollStatus(true);
+      }
+    });
+  } catch (_) {}
 
   // Don’t preselect any account on load; require explicit user action
   hasAccountSelected = false;
@@ -211,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
     hasAccountSelected = !!acct;
     startButton.disabled = !hasAccountSelected;
     acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
+    if (acct) { try { chrome.storage.local.set({ selectedAccount: acct }); } catch (_) {} }
     pollStatus(true);
   }));
 

@@ -196,15 +196,20 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
         if (tabId === tab.id && changeInfo.status === 'complete') {
             chrome.tabs.onUpdated.removeListener(listener);
 
-            // Add a 10-second delay before injecting the content script
+            // Add a 10-second delay before messaging the content script
             setTimeout(() => {
-                chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    files: ['src/content.js']
-                }, () => {
-                    chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl });
+                // Try to send message; if it fails due to missing CS, inject once and retry
+                const sendPost = () => chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl }, () => {
+                    if (chrome.runtime.lastError) {
+                        // Fallback: inject once
+                        chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/content.js'] }, () => {
+                            chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl });
+                        });
+                    }
+                });
+                sendPost();
 
-                    const onResponse = function(message, senderInfo) {
+                const onResponse = function(message, senderInfo) {
                         if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
                             chrome.runtime.onMessage.removeListener(onResponse);
                             // Record duplicates (post URL and optional commentId)
@@ -231,9 +236,8 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                 }
                             });
                         }
-                    };
-                    chrome.runtime.onMessage.addListener(onResponse);
-                });
+                };
+                chrome.runtime.onMessage.addListener(onResponse);
             }, 10000); // 10,000 ms = 10 seconds
         }
     });

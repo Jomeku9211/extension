@@ -1,8 +1,19 @@
+// Singleton guard to avoid duplicate script behavior
+if (window.__CF_CS_LOADED) {
+    console.log("Content script already loaded - skipping init");
+} else {
+window.__CF_CS_LOADED = true;
 console.log("Content script loaded");
 
+let postingInFlight = false;
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "postComment" && request.commentText) {
-        waitForEditorAndTypeComment(request.commentText, request.postUrl || null);
+        if (postingInFlight || commentPosted) return; // ignore duplicate triggers
+        postingInFlight = true;
+        waitForEditorAndTypeComment(request.commentText, request.postUrl || null).finally(() => {
+            // allow next after we have either posted or timed out (commentPosted prevents duplicates anyway)
+            postingInFlight = false;
+        });
     }
 });
 
@@ -107,4 +118,5 @@ function findNewestCommentIdNearEditor(qlEditor) {
     } catch {
         return null;
     }
+}
 }

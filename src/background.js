@@ -42,15 +42,18 @@ async function loadConfig() { return CONFIG; }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "start") {
-        if (isRunning) return;
         loadConfig().then(() => {
+            // Always treat Start as a fresh session
             isRunning = true;
-            // Run soon (2 seconds) for immediate feedback
+            runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+            startedAt = Date.now();
+            // Immediate kickoff
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
-            startedAt = Date.now();
-            chrome.storage.local.set({ isRunning, nextFireTime, startedAt });
-            scheduleNext(nextDelay);
+            chrome.alarms.clear('autoCommentTick', () => {
+                chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+                scheduleNext(nextDelay);
+            });
         });
     } 
     else if (request.action === "stop") {
@@ -58,7 +61,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         nextFireTime = null;
         startedAt = null;
         chrome.alarms.clear('autoCommentTick');
-        chrome.storage.local.set({ isRunning, nextFireTime, startedAt });
+    runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+    chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
     }
     else if (request.action === "getStatus") {
         sendResponse({ isRunning, nextFireTime, runStats, startedAt });

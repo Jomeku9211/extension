@@ -192,11 +192,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
             startedAt = Date.now();
             console.log('Starting auto-commenter for account:', currentAccount);
-            // Immediate kickoff
+            // Immediate kickoff: set nextFireTime first so popup can show it instantly
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
             chrome.alarms.clear('autoCommentTick', () => {
-                chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
                 scheduleNext(nextDelay);
             });
             refreshTodayCount(currentAccount);

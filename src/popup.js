@@ -155,7 +155,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const acct = getSelectedAccount();
     if (!acct) { startButton.disabled = true; return; }
     chrome.runtime.sendMessage({ action: 'start', account: acct });
-    pollStatus(true);
+  // Optimistic UI: show Active state and start a 2s countdown immediately
+  updateStatusUI(true, null);
+  const optimisticNext = Date.now() + 2000;
+  updateTimerUI(optimisticNext);
+  pollStatus(true);
     if (!countdownId) countdownId = setInterval(() => {
       if (lastNextFireTime) updateTimerUI(lastNextFireTime);
       // Occasionally poll to refresh stats and nextFireTime

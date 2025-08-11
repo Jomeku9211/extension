@@ -159,7 +159,8 @@ document.addEventListener('DOMContentLoaded', () => {
   updateStatusUI(true, null);
   const optimisticNext = Date.now() + 2000;
   updateTimerUI(optimisticNext);
-  pollStatus(true);
+  // Give background a brief moment to acquire the lock and persist state
+  setTimeout(() => pollStatus(true), 1000);
     if (!countdownId) countdownId = setInterval(() => {
       if (lastNextFireTime) updateTimerUI(lastNextFireTime);
       // Occasionally poll to refresh stats and nextFireTime

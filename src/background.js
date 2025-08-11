@@ -180,9 +180,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         loadConfig().then(() => {
             // Acquire cross-browser lock before starting
-            acquireAccountLock(currentAccount).then((locked) => {
+            acquireAccountLock(currentAccount).then(async (locked) => {
                 if (!locked) {
-                    runStats.lastError = `Account ${currentAccount} is active on another browser`;
+                    // Distinguish between real cross-browser lock vs config/API error
+                    try {
+                        const lockState = await checkAccountLock(currentAccount);
+                        if (lockState && lockState.isLockedByOther) {
+                            runStats.lastError = `Account ${currentAccount} is active on another browser`;
+                        } else {
+                            runStats.lastError = runStats.lastError || 'Failed to acquire lock. Ensure Airtable fields exist and Picked By is a text field.';
+                        }
+                    } catch (_) {
+                        runStats.lastError = runStats.lastError || 'Failed to acquire lock. Please verify Airtable config and network.';
+                    }
                     isRunning = false;
                     chrome.storage.local.set({ runStats, isRunning });
                     return;
@@ -698,14 +708,25 @@ async function acquireAccountLock(acct) {
             return false; // held by someone else
         }
         const newPickedBy = `${instanceId}:${Date.now()}`;
-        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+        const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
             method: 'PATCH',
             headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': newPickedBy } })
         });
+        if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            const msg = `Lock update failed: ${formatAirtable(j, res.statusText)}`;
+            console.warn(msg);
+            runStats.lastError = msg;
+            chrome.storage.local.set({ runStats });
+            return false;
+        }
         return true;
     } catch (e) {
-        console.warn('acquireAccountLock failed', e);
+        const msg = formatErr(e);
+        console.warn('acquireAccountLock failed', msg);
+        runStats.lastError = `Acquire lock error: ${msg}`;
+        chrome.storage.local.set({ runStats });
         return false;
     }
 }

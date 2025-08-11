@@ -48,9 +48,11 @@
             button { width: 100%; padding: 10px; margin-top: 8px; border-radius: 8px; border: 1px solid transparent; font-weight: 600; cursor: pointer; }
             .btn-start { background: linear-gradient(135deg, #2563eb, #22d3ee); color: white; }
             .btn-start:hover { filter: brightness(1.05); }
+            .btn-start:disabled { opacity: 0.55; cursor: not-allowed; filter: grayscale(25%); }
             .btn-stop { background: linear-gradient(135deg, #ef4444, #f59e0b); color: #111827; }
             .btn-stop:hover { filter: brightness(1.05); }
             .hidden { display: none; }
+            .hint { font-size: 11px; color: var(--accent); margin-top: 6px; }
         </style>
 </head>
 <body>
@@ -97,6 +99,8 @@
                                 <span id="stat-startedAt" class="value muted">--</span>
                             </div>
                 </div>
+
+                <div id="acctHint" class="hint">Select an account to start.</div>
 
                 <button id="start-button" class="btn-start" disabled>Start</button>
                 <button id="stop-button" class="btn-stop hidden">Stop</button>

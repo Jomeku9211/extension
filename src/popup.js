@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const acctRadios = Array.from(document.querySelectorAll('input[name="acct"]'));
     const errorRow = document.getElementById('errorRow');
     const lockRow = document.getElementById('lockRow');
+    const acctHint = document.getElementById('acctHint');
 
     let countdownId = null;
     let lastNextFireTime = null;
@@ -48,8 +49,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const stopBtn = document.getElementById('stop-button');
         stopBtn.classList.toggle('hidden', !isActive);
         stopBtn.disabled = !isActive;
-        // Disable Start if no account selected
-        startButton.disabled = !hasAccountSelected || !!isActive;
+    // Disable Start if no account selected and toggle hint
+    const shouldDisable = !hasAccountSelected || !!isActive;
+    startButton.disabled = shouldDisable;
+    acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
         // Error display
         if (!isActive && lastError) {
             errorRow.style.display = 'block';
@@ -126,7 +129,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const acct = getSelectedAccount();
         hasAccountSelected = !!acct;
         // If no account, show placeholders and bail
-        if (!hasAccountSelected) {
+    if (!hasAccountSelected) {
             updateStatusUI(false, null);
             updateTimerUI(null);
             updateStatsUI({ processed: 0, successes: 0, failures: 0 }, null, null);
@@ -176,7 +179,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const val = (it.selectedAccount === 'A' || it.selectedAccount === 'D') ? it.selectedAccount : null;
         if (val) setSelectedAccount(val);
         hasAccountSelected = !!val;
-        startButton.disabled = !hasAccountSelected;
+    startButton.disabled = !hasAccountSelected;
+    acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
         pollStatus();
     });
     countdownId = setInterval(() => {
@@ -189,7 +193,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const acct = getSelectedAccount();
         hasAccountSelected = !!acct;
         chrome.storage.local.set({ selectedAccount: acct || null });
-        startButton.disabled = !hasAccountSelected;
+    startButton.disabled = !hasAccountSelected;
+    acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
         pollStatus();
     }));
 

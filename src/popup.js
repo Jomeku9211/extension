@@ -1,4 +1,26 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Robust stringify to avoid [object Object] and handle Error objects/circular refs
+    function safeStringify(obj) {
+        try {
+            if (!obj) return '';
+            if (typeof obj === 'string') return obj;
+            if (obj && typeof obj.message === 'string') return obj.message;
+            const seen = new WeakSet();
+            return JSON.stringify(obj, (k, v) => {
+                if (v instanceof Error) {
+                    return { name: v.name, message: v.message, stack: v.stack };
+                }
+                if (typeof v === 'object' && v !== null) {
+                    if (seen.has(v)) return '[Circular]';
+                    seen.add(v);
+                }
+                return v;
+            });
+        } catch {
+            return String(obj);
+        }
+    }
+
     const startButton = document.getElementById('start-button');
     const stopButton = document.getElementById('stop-button');
     const statusDiv = document.getElementById('status');
@@ -31,7 +53,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // Error display
         if (!isActive && lastError) {
             errorRow.style.display = 'block';
-            errorRow.textContent = `Reason: ${lastError}`;
+            const msg = safeStringify(lastError) || '';
+            errorRow.textContent = `Reason: ${msg}`;
         } else {
             errorRow.style.display = 'none';
             errorRow.textContent = '';

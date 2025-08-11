@@ -167,21 +167,20 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   stopButton.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: 'stop', account: getSelectedAccount() });
+    const acct = getSelectedAccount();
+    chrome.runtime.sendMessage({ action: 'stop', account: acct || undefined });
+    // Clear selection after stop
+    clearAccountSelection();
     pollStatus(true);
     if (countdownId) { clearInterval(countdownId); countdownId = null; }
-    startButton.disabled = false;
+    startButton.disabled = true;
   });
 
-  // Load saved account (do not default; require explicit user selection)
-  chrome.storage.local.get(['selectedAccount'], (it) => {
-    const val = (it && (it.selectedAccount === 'A' || it.selectedAccount === 'D')) ? it.selectedAccount : null;
-    if (val) setSelectedAccount(val);
-    hasAccountSelected = !!val;
-    startButton.disabled = !hasAccountSelected;
-    acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
-    pollStatus(true);
-  });
+  // Don’t preselect any account on load; require explicit user action
+  hasAccountSelected = false;
+  startButton.disabled = true;
+  acctHint.style.display = 'block';
+  pollStatus(true);
 
   // Local tick for timer and last-start display
   countdownId = setInterval(() => {
@@ -193,7 +192,6 @@ document.addEventListener('DOMContentLoaded', () => {
   acctRadios.forEach(r => r.addEventListener('change', () => {
     const acct = getSelectedAccount();
     hasAccountSelected = !!acct;
-    chrome.storage.local.set({ selectedAccount: acct || null });
     startButton.disabled = !hasAccountSelected;
     acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
     pollStatus(true);
@@ -205,5 +203,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function setSelectedAccount(val) {
     acctRadios.forEach(r => r.checked = (r.value === val));
+  }
+  function clearAccountSelection() {
+    acctRadios.forEach(r => r.checked = false);
+    hasAccountSelected = false;
+    startButton.disabled = true;
+    acctHint.style.display = 'block';
   }
 });

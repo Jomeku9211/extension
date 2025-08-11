@@ -291,7 +291,7 @@ async function processRecords() {
     if (!claim || claim.status === 'no-record') {
         console.log("No pending records in Airtable. Stopping.");
         runStats.lastRun = Date.now();
-        runStats.lastError = 'No records in Airtable';
+        runStats.lastError = `No records in Airtable (view: ${AIRTABLE_VIEW_ID || 'default'})`;
         // Stop the worker and clear next alarm
         isRunning = false;
         nextFireTime = null;
@@ -332,7 +332,8 @@ async function processRecords() {
         return;
     }
 
-    const postUrl = record.fields["Post URL"];
+    const fields = record.fields || {};
+    const postUrl = fields["Post URL"];
     // Check duplicates after claiming
     await refreshDuplicatesIfStale();
     if (isDuplicate(postUrl)) {
@@ -352,7 +353,31 @@ async function processRecords() {
         }
         return;
     }
-    const commentText = record.fields["Generated Comment"];
+    const commentText = fields["Generated Comment"];
+    if (!postUrl || !commentText) {
+        const missing = !postUrl && !commentText ? 'Post URL and Generated Comment' : (!postUrl ? 'Post URL' : 'Generated Comment');
+        const reason = `Airtable record missing required field(s): ${missing}`;
+        console.warn(reason, record && record.id);
+        // release claim so another fixed pass can process later
+        try {
+            await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${record.id}`, {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fields: { 'In Progress': false, 'Picked By': '' } })
+            });
+        } catch(_) {}
+        runStats.failures += 1;
+        runStats.lastRun = Date.now();
+        runStats.lastError = reason;
+        chrome.storage.local.set({ runStats });
+        if (isRunning) {
+            nextDelay = getRandomDelay();
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ nextFireTime });
+            scheduleNext(nextDelay);
+        }
+        return;
+    }
     console.log(`Opening LinkedIn post: ${postUrl}`);
 
 
@@ -476,18 +501,18 @@ async function getNextPendingRecord() {
         runStats.lastError = `Airtable list error: ${msg}`;
         chrome.storage.local.set({ runStats });
     }
-    return { ok: res.ok, json };
+    return { ok: res.ok, json, url, formula };
     }
 
     // Try strict formula first (requires In Progress field); then fallback
     try {
         const excludeLock = "AND(NOT({Post URL}='LOCK_A'), NOT({Post URL}='LOCK_D'))";
-        let { ok, json } = await fetchWithFormula(`AND(NOT({Comment Done}), NOT({In Progress}), ${excludeLock})`);
+        let { ok, json, url, formula } = await fetchWithFormula(`AND(NOT({Comment Done}), NOT({In Progress}), ${excludeLock})`);
         if (!ok || !json.records) {
-            console.warn('Strict formula failed or no records; falling back', formatAirtable(json, 'no records'));
-            ({ ok, json } = await fetchWithFormula(`AND(NOT({Comment Done}), ${excludeLock})`));
+            console.warn('Strict formula failed or no records; falling back', { view: AIRTABLE_VIEW_ID, formula, url, info: formatAirtable(json, 'no records') });
+            ({ ok, json, url, formula } = await fetchWithFormula(`AND(NOT({Comment Done}), ${excludeLock})`));
         }
-        console.log('Fetched records from Airtable:', json);
+        console.log('Fetched records from Airtable:', { count: json && json.records ? json.records.length : 0, view: AIRTABLE_VIEW_ID, formula, url });
         if (!json || !json.records) return null;
         return json.records.length > 0 ? json.records[0] : null;
     } catch (e) {

@@ -6,8 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const processedEl = document.getElementById('stat-processed');
     const successesEl = document.getElementById('stat-successes');
     const failuresEl = document.getElementById('stat-failures');
-    const lastRunEl = document.getElementById('stat-lastRun');
-    const lastErrorEl = document.getElementById('stat-lastError');
+        const startedAtEl = document.getElementById('stat-startedAt');
 
     let countdownId = null;
     let lastNextFireTime = null;
@@ -35,13 +34,17 @@ document.addEventListener('DOMContentLoaded', () => {
         timerDiv.textContent = `Next: ${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
     }
 
-    function updateStatsUI(runStats) {
+        function updateStatsUI(runStats, startedAt) {
         const rs = runStats || {};
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
         failuresEl.textContent = rs.failures || 0;
-        lastRunEl.textContent = rs.lastRun ? new Date(rs.lastRun).toLocaleString() : '--';
-        lastErrorEl.textContent = rs.lastError || '--';
+            if (startedAt) {
+                const d = new Date(startedAt);
+                startedAtEl.textContent = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+            } else {
+                startedAtEl.textContent = '--';
+            }
     }
 
     function pollStatus() {
@@ -54,7 +57,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             updateStatusUI(resp.isRunning);
             updateTimerUI(resp.nextFireTime);
-            updateStatsUI(resp.runStats);
+            updateStatsUI(resp.runStats, resp.startedAt);
         });
     }
 

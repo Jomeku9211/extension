@@ -8,13 +8,15 @@ let CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_V
 let isRunning = false;
 let nextDelay = null;
 let nextFireTime = null;
+let startedAt = null;
 let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
 
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt'], (items) => {
     isRunning = !!items.isRunning;
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
+    startedAt = items.startedAt || null;
     if (isRunning) {
         if (nextFireTime && Date.now() < nextFireTime) {
             const delayMs = Math.max(0, nextFireTime - Date.now());
@@ -46,18 +48,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             // Run soon (2 seconds) for immediate feedback
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
-            chrome.storage.local.set({ isRunning, nextFireTime });
+            startedAt = Date.now();
+            chrome.storage.local.set({ isRunning, nextFireTime, startedAt });
             scheduleNext(nextDelay);
         });
     } 
     else if (request.action === "stop") {
         isRunning = false;
         nextFireTime = null;
+        startedAt = null;
         chrome.alarms.clear('autoCommentTick');
-        chrome.storage.local.set({ isRunning, nextFireTime });
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt });
     }
     else if (request.action === "getStatus") {
-        sendResponse({ isRunning, nextFireTime, runStats });
+        sendResponse({ isRunning, nextFireTime, runStats, startedAt });
         // No need to return true, since sendResponse is synchronous here
     }
 });

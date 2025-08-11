@@ -23,6 +23,8 @@
                 color: var(--text);
                 background: linear-gradient(135deg, #0b1020, #141a33 60%, #0b1020);
             }
+            .title { font-weight: 800; font-size: 14px; letter-spacing: 0.3px; margin-bottom: 8px; color: #eaeff9; text-transform: uppercase; }
+            .title .accent { color: var(--accent); }
             .card {
                 background: var(--panel);
                 border: 1px solid #1f2937; /* gray-800 */
@@ -50,6 +52,7 @@
         </style>
 </head>
 <body>
+            <div class="title">CoderFarm <span class="accent">Commenting Tool</span></div>
             <div class="card">
                 <div class="row">
                     <div id="status" class="badge status-inactive">Inactive</div>

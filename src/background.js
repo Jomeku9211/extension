@@ -597,7 +597,7 @@ async function claimNextRecord(acct) {
     if (!rec) return { status: 'no-record', record: null };
     const id = rec.id;
     try {
-        const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${id}`, {
+        let res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${id}`, {
             method: 'PATCH',
             headers: {
                 Authorization: `Bearer ${AIRTABLE_API_KEY}`,
@@ -605,13 +605,22 @@ async function claimNextRecord(acct) {
             },
             body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': acct } })
         });
-        const j = await res.json().catch(() => ({}));
+        let j = await res.json().catch(() => ({}));
         if (!res.ok) {
-            const msg = `Claim failed: ${formatAirtable(j, res.statusText)}`;
-            console.warn(msg);
-            runStats.lastError = msg;
-            chrome.storage.local.set({ runStats });
-            return { status: 'claim-failed', record: null };
+            // Retry without 'In Progress' (some bases may not have that field)
+            res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${id}`, {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fields: { 'Picked By': acct } })
+            });
+            j = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                const msg = `Claim failed: ${formatAirtable(j, res.statusText)}`;
+                console.warn(msg);
+                runStats.lastError = msg;
+                chrome.storage.local.set({ runStats });
+                return { status: 'claim-failed', record: null };
+            }
         }
         return { status: 'ok', record: rec };
     } catch (e) {
@@ -626,7 +635,7 @@ async function claimNextRecord(acct) {
 // Mark the record as done and stamp the account that posted it; clear in-progress
 async function finalizeRecord(recordId, acct, tabId) {
     const commenter = acct === 'D' ? 'Dheeraj' : 'Abhilasha';
-    const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
+    let res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
         method: 'PATCH',
         headers: {
             Authorization: `Bearer ${AIRTABLE_API_KEY}`,
@@ -635,9 +644,18 @@ async function finalizeRecord(recordId, acct, tabId) {
         body: JSON.stringify({ fields: { 'Comment Done': true, 'In Progress': false, 'Picked By': acct, 'Comment By': commenter } })
     });
     if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        runStats.lastError = `Finalize failed: ${formatAirtable(j, res.statusText)}`;
-        chrome.storage.local.set({ runStats });
+        let j = await res.json().catch(() => ({}));
+        // Retry without 'In Progress'
+        res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fields: { 'Comment Done': true, 'Picked By': acct, 'Comment By': commenter } })
+        });
+        if (!res.ok) {
+            j = await res.json().catch(() => ({}));
+            runStats.lastError = `Finalize failed: ${formatAirtable(j, res.statusText)}`;
+            chrome.storage.local.set({ runStats });
+        }
     }
     if (tabId) {
         chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
@@ -651,7 +669,11 @@ async function verifyOwnership(recordId, acct) {
         const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
         const data = await res.json();
         const fields = data && data.fields ? data.fields : {};
-        return fields['In Progress'] === true && fields['Picked By'] === acct;
+        if (Object.prototype.hasOwnProperty.call(fields, 'In Progress')) {
+            return fields['In Progress'] === true && fields['Picked By'] === acct;
+        }
+        // If 'In Progress' doesn't exist, validate ownership using only 'Picked By'
+        return fields['Picked By'] === acct;
     } catch (e) {
         console.warn('verifyOwnership failed', e);
         return false;
@@ -807,11 +829,14 @@ async function getOrCreateLockRecord(acct) {
     const res = await fetch(findUrl, { headers });
     const data = await res.json();
     if (data && Array.isArray(data.records) && data.records.length > 0) return data.records[0];
-    // Create a lock record (assumes fields 'Post URL', 'In Progress', 'Picked By' exist)
+    // Create a lock record. Prefer including 'Picked By'; omit 'In Progress' if the base doesn't support it.
     const createUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}`;
-    const body = { records: [{ fields: { 'Post URL': key, 'In Progress': false, 'Picked By': '' } }] };
-    const cres = await fetch(createUrl, { method: 'POST', headers, body: JSON.stringify(body) });
-    const cjson = await cres.json();
+    let cres = await fetch(createUrl, { method: 'POST', headers, body: JSON.stringify({ records: [{ fields: { 'Post URL': key, 'Picked By': '' } }] }) });
+    if (!cres.ok) {
+        // Retry with 'In Progress' if first attempt fails for some reason
+        cres = await fetch(createUrl, { method: 'POST', headers, body: JSON.stringify({ records: [{ fields: { 'Post URL': key, 'In Progress': false, 'Picked By': '' } }] }) });
+    }
+    const cjson = await cres.json().catch(() => ({}));
     return cjson && Array.isArray(cjson.records) ? cjson.records[0] : null;
 }
 
@@ -836,18 +861,26 @@ async function acquireAccountLock(acct) {
             return false; // held by someone else
         }
         const newPickedBy = `${instanceId}:${Date.now()}`;
-        const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+        let res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
             method: 'PATCH',
             headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': newPickedBy } })
         });
         if (!res.ok) {
-            const j = await res.json().catch(() => ({}));
-            const msg = `Lock update failed: ${formatAirtable(j, res.statusText)}`;
-            console.warn(msg);
-            runStats.lastError = msg;
-            chrome.storage.local.set({ runStats });
-            return false;
+            // Retry without 'In Progress' (support bases lacking that field)
+            res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fields: { 'Picked By': newPickedBy } })
+            });
+            if (!res.ok) {
+                const j = await res.json().catch(() => ({}));
+                const msg = `Lock update failed: ${formatAirtable(j, res.statusText)}`;
+                console.warn(msg);
+                runStats.lastError = msg;
+                chrome.storage.local.set({ runStats });
+                return false;
+            }
         }
         return true;
     } catch (e) {
@@ -866,11 +899,19 @@ async function heartbeatAccountLock(acct) {
         const fields = rec.fields || {};
         const { holder } = parsePickedBy(fields['Picked By']);
         if (holder !== instanceId) return;
-        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+        let res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
             method: 'PATCH',
             headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': `${instanceId}:${Date.now()}` } })
         });
+        if (!res.ok) {
+            // fallback without 'In Progress'
+            await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fields: { 'Picked By': `${instanceId}:${Date.now()}` } })
+            });
+        }
     } catch (e) {
         console.warn('heartbeatAccountLock failed', e);
     }
@@ -883,11 +924,19 @@ async function releaseAccountLock(acct) {
         const fields = rec.fields || {};
         const { holder } = parsePickedBy(fields['Picked By']);
         if (holder && holder !== instanceId) return; // don't release others
-        await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+        let res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
             method: 'PATCH',
             headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ fields: { 'In Progress': false, 'Picked By': '' } })
         });
+        if (!res.ok) {
+            // fallback without 'In Progress'
+            await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${rec.id}`, {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fields: { 'Picked By': '' } })
+            });
+        }
     } catch (e) {
         console.warn('releaseAccountLock failed', e);
     }
@@ -898,10 +947,15 @@ async function checkAccountLock(acct) {
         const rec = await getOrCreateLockRecord(acct);
         if (!rec) return { isLockedByOther: false, heldBySelf: false };
         const fields = rec.fields || {};
-        const active = !!fields['In Progress'];
+        // If 'In Progress' doesn't exist, consider lock active if Picked By has a non-stale holder
+        const hasInProgress = Object.prototype.hasOwnProperty.call(fields, 'In Progress');
+        let active = hasInProgress ? !!fields['In Progress'] : false;
         const { holder, ts } = parsePickedBy(fields['Picked By']);
         const now = Date.now();
         const stale = !ts || now - ts > 2 * 60 * 1000;
+        if (!hasInProgress) {
+            active = !!holder && !stale;
+        }
         const heldBySelf = active && holder === instanceId && !stale;
         const isLockedByOther = active && holder !== instanceId && !stale;
         return { isLockedByOther, heldBySelf };

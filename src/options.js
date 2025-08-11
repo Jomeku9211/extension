@@ -1,8 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
   const apiKeyEl = document.getElementById('apiKey');
-  const baseIdEl = document.getElementById('baseId');
-  const tableIdEl = document.getElementById('tableId');
-  const viewIdEl = document.getElementById('viewId');
   const msgEl = document.getElementById('msg');
   const outEl = document.getElementById('testOut');
 
@@ -11,43 +8,39 @@ document.addEventListener('DOMContentLoaded', () => {
     msgEl.style.color = ok ? 'green' : 'red';
   }
 
-  chrome.storage.local.get(['AIRTABLE_API_KEY','AIRTABLE_BASE_ID','AIRTABLE_TABLE_ID','AIRTABLE_VIEW_ID'], (items) => {
+  chrome.storage.local.get(['AIRTABLE_API_KEY'], (items) => {
     apiKeyEl.value = items.AIRTABLE_API_KEY || '';
-    baseIdEl.value = items.AIRTABLE_BASE_ID || '';
-    tableIdEl.value = items.AIRTABLE_TABLE_ID || '';
-    viewIdEl.value = items.AIRTABLE_VIEW_ID || '';
   });
 
   document.getElementById('saveBtn').addEventListener('click', () => {
     const AIRTABLE_API_KEY = apiKeyEl.value.trim();
-    const AIRTABLE_BASE_ID = baseIdEl.value.trim();
-    const AIRTABLE_TABLE_ID = tableIdEl.value.trim();
-    const AIRTABLE_VIEW_ID = viewIdEl.value.trim();
-
-    if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) {
-      setMsg('Please fill API key, Base ID and Table ID.', false);
+    if (!AIRTABLE_API_KEY) {
+      setMsg('Please fill API key.', false);
       return;
     }
 
-    chrome.storage.local.set({ AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID }, () => {
+    chrome.storage.local.set({ AIRTABLE_API_KEY }, () => {
       setMsg('Saved!', true);
     });
   });
 
   document.getElementById('testBtn').addEventListener('click', async () => {
     outEl.textContent = 'Testing...';
-    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = await new Promise((resolve) => {
-      chrome.storage.local.get(['AIRTABLE_API_KEY','AIRTABLE_BASE_ID','AIRTABLE_TABLE_ID','AIRTABLE_VIEW_ID'], resolve);
+    const { AIRTABLE_API_KEY } = await new Promise((resolve) => {
+      chrome.storage.local.get(['AIRTABLE_API_KEY'], resolve);
     });
 
-    if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) {
+    if (!AIRTABLE_API_KEY) {
       outEl.textContent = 'Missing config.';
       return;
     }
 
     try {
+      const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
+      const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
+      const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
       const params = new URLSearchParams();
-      if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
+      params.set('view', AIRTABLE_VIEW_ID);
       params.set('pageSize', '1');
       params.set('filterByFormula', 'NOT({Comment Done})');
       const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;

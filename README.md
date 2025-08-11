@@ -39,8 +39,10 @@ linkedin-airtable-commenter
    - Click on "Load unpacked" and select the `linkedin-airtable-commenter` directory.
 
 3. **Configure Airtable (Options page):**
-   - Right-click the extension icon and choose "Options" or open it from `chrome://extensions` > this extension > Extension options.
-   - Enter your Airtable API Key, Base ID, Table ID, and optional View ID. The data is saved to local browser storage.
+    - Open Options and enter your Airtable API Key only. Base/Table/View IDs are fixed in the extension to:
+       - Base: appD9VxZrOhiQY9VB
+       - Table: tblyhMPmCt87ORo3t
+       - View: viwiRzf62qaMKGQoG
 
 ## Usage
 

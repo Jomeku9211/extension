@@ -1,4 +1,7 @@
-// Airtable credentials are loaded from chrome.storage (set in options page)
+// Airtable config: fixed IDs per requested setup; API key from storage
+const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
+const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
+const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
 let CONFIG = null;
 
 let isRunning = false;
@@ -32,15 +35,10 @@ function getRandomDelay() {
 
 async function loadConfig() {
     return new Promise((resolve) => {
-        chrome.storage.local.get([
-            'AIRTABLE_API_KEY',
-            'AIRTABLE_BASE_ID',
-            'AIRTABLE_TABLE_ID',
-            'AIRTABLE_VIEW_ID'
-        ], (items) => {
-            const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = items || {};
-            if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) {
-                console.warn('Airtable config missing. Open the extension options to configure.');
+        chrome.storage.local.get(['AIRTABLE_API_KEY'], (items) => {
+            const { AIRTABLE_API_KEY } = items || {};
+            if (!AIRTABLE_API_KEY) {
+                console.warn('Airtable API key missing. Open the extension options to configure.');
                 CONFIG = null;
                 return resolve(null);
             }
@@ -158,7 +156,7 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
 }
 
 async function getNextPendingRecord() {
-    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = CONFIG || {};
+    const { AIRTABLE_API_KEY } = CONFIG || {};
     const params = new URLSearchParams();
     if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
     params.set('pageSize', '1');
@@ -181,7 +179,7 @@ async function getNextPendingRecord() {
 }
 
 async function markRecordDone(recordId, tabId) {
-    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID } = CONFIG || {};
+    const { AIRTABLE_API_KEY } = CONFIG || {};
     await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
         method: 'PATCH',
         headers: {

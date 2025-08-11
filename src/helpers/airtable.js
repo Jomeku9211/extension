@@ -3,7 +3,12 @@
 
 async function readConfigFromStorage() {
     return new Promise((resolve) => {
-        chrome.storage.local.get(['AIRTABLE_API_KEY','AIRTABLE_BASE_ID','AIRTABLE_TABLE_ID','AIRTABLE_VIEW_ID'], resolve);
+        chrome.storage.local.get(['AIRTABLE_API_KEY'], (items) => {
+            const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
+            const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
+            const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
+            resolve({ ...items, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID });
+        });
     });
 }
 

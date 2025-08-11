@@ -44,25 +44,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderStartedAt();
     }
 
-            function formatHHMMSS(date) {
-                const hh = date.getHours().toString().padStart(2, '0');
-                const mm = date.getMinutes().toString().padStart(2, '0');
-                const ss = date.getSeconds().toString().padStart(2, '0');
-                return `${hh}:${mm}:${ss}`;
-            }
+                function formatHHmmAmPm(date) {
+                    let h = date.getHours();
+                    const ampm = h >= 12 ? 'PM' : 'AM';
+                    h = h % 12;
+                    if (h === 0) h = 12;
+                    const hh = h.toString().padStart(2, '0');
+                    const mm = date.getMinutes().toString().padStart(2, '0');
+                    return `${hh}.${mm} ${ampm}`;
+                }
 
-            function formatAgo(ms) {
-                if (ms <= 0) return '0s ago';
-                const s = Math.floor(ms / 1000);
-                const h = Math.floor(s / 3600);
-                const m = Math.floor((s % 3600) / 60);
-                const sec = s % 60;
-                const parts = [];
-                if (h) parts.push(`${h}h`);
-                if (m) parts.push(`${m}m`);
-                parts.push(`${sec}s`);
-                return parts.join(' ') + ' ago';
-            }
+                    function formatMinutesAgo(ms) {
+                        const mins = Math.max(0, Math.floor(ms / 60000));
+                        return `${mins}m ago`;
+                    }
 
             function renderStartedAt() {
                 if (!lastStartedAt) {
@@ -70,9 +65,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const d = new Date(lastStartedAt);
-                const label = formatHHMMSS(d);
-                const ago = formatAgo(Date.now() - d.getTime());
-                startedAtEl.textContent = `${label} (${ago})`;
+                const label = formatHHmmAmPm(d);
+                const ago = formatMinutesAgo(Date.now() - d.getTime());
+                startedAtEl.textContent = `${label} - (${ago})`;
             }
 
     function pollStatus() {

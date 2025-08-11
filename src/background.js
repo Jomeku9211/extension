@@ -33,6 +33,18 @@ let duplicateCommentIds = new Set();
 let dupLastRefreshed = 0;
 const DUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
+// Normalize LinkedIn URLs to reduce false non-duplicates due to query/hash/ending slash
+function normalizeUrl(u) {
+    try {
+        const url = new URL(u);
+        let path = url.pathname || '/';
+        if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+        return `${url.origin}${path}`;
+    } catch (e) {
+        return u;
+    }
+}
+
 // ---------- Error formatting helpers ----------
 function safeStringify(obj) {
     try {
@@ -193,8 +205,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     } catch (_) {
                         runStats.lastError = runStats.lastError || 'Failed to acquire lock. Please verify Airtable config and network.';
                     }
-                    isRunning = false;
-                    chrome.storage.local.set({ runStats, isRunning });
+            isRunning = false;
+            chrome.storage.local.set({ runStats, isRunning });
+            try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
                     return;
                 }
             // Always treat Start as a fresh session
@@ -205,7 +218,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             // Immediate kickoff: set nextFireTime first so popup can show it instantly
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
-            chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+        try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
             chrome.alarms.clear('autoCommentTick', () => {
                 scheduleNext(nextDelay);
             });
@@ -214,10 +228,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
     } 
     else if (request.action === "stop") {
-        if (request.account === 'D' || request.account === 'A') {
-            currentAccount = request.account;
-            chrome.storage.local.set({ selectedAccount: currentAccount });
-        }
         isRunning = false;
         nextFireTime = null;
         startedAt = null;
@@ -225,6 +235,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
     chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
     releaseAccountLock(currentAccount).catch(()=>{});
+    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
     }
     else if (request.action === 'checkLock') {
         const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
@@ -300,6 +311,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function scheduleNext(delayMs) {
     if (!isRunning) return;
     chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
+    // Notify popup so it refreshes timer/stats immediately
+    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
 }
 
 async function processRecords() {
@@ -415,6 +428,11 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
 
             // Add a 10-second delay before messaging the content script
             setTimeout(() => {
+                // If stopped during the wait, abort and close the tab
+                if (!isRunning) {
+                    try { chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError); } catch {}
+                    return;
+                }
                 // Try to send message; if it fails due to missing CS, inject once and retry
                 let completed = false;
                 let watchdogTimer = null;
@@ -460,55 +478,62 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                 sendPost();
 
                 const onResponse = function(message, senderInfo) {
+                        if (!isRunning) {
+                            // If we stopped, ignore and clean up
+                            chrome.runtime.onMessage.removeListener(onResponse);
+                            try { chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError); } catch {}
+                            return;
+                        }
                         if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
                             chrome.runtime.onMessage.removeListener(onResponse);
                             completed = true;
                             if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
                             // Record duplicates (post URL and optional commentId)
-                            if (message.postUrl) duplicateUrls.add(message.postUrl);
+                            if (message.postUrl) duplicateUrls.add(normalizeUrl(message.postUrl));
                             if (message.commentId) duplicateCommentIds.add(message.commentId);
                             chrome.storage.local.set({
                                 duplicateUrls: Array.from(duplicateUrls),
                                 duplicateCommentIds: Array.from(duplicateCommentIds)
                             });
+                            // Finalize now, then schedule the next run with a human-like delay
                             finalizeRecord(record.id, currentAccount, tab.id).then(() => {
-                                console.log("Marked record as done in Airtable:", record.id);
-                                runStats.processed += 1;
-                                runStats.successes += 1;
-                                runStats.lastRun = Date.now();
-                                runStats.lastError = null;
-                                // Optimistically increment today's count for this account
-                                if (currentAccount === 'D') {
-                                    todayCountD += 1;
-                                    lastCountAtD = Date.now();
-                                } else {
-                                    todayCountA += 1;
-                                    lastCountAtA = Date.now();
-                                }
-                                chrome.storage.local.set({ todayCountA, todayCountD, lastCountAtA, lastCountAtD });
-                                // kick a background refresh of the current account's Today count
-                                refreshTodayCount(currentAccount);
-                                if (isRunning) {
-                                    nextDelay = getRandomDelay();
-                                    nextFireTime = Date.now() + nextDelay;
-                                    chrome.storage.local.set({ nextFireTime, runStats });
-                                    scheduleNext(nextDelay);
-                                    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
-                                }
-                            }).catch((e) => {
-                                // Even if finalize fails, schedule next to keep running
-                                runStats.failures += 1;
-                                runStats.lastRun = Date.now();
-                                runStats.lastError = `Finalize error: ${formatErr(e)}`;
-                                chrome.storage.local.set({ runStats });
-                                if (isRunning) {
-                                    nextDelay = getRandomDelay();
-                                    nextFireTime = Date.now() + nextDelay;
-                                    chrome.storage.local.set({ nextFireTime });
-                                    scheduleNext(nextDelay);
-                                    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
-                                }
-                            });
+                                    console.log("Marked record as done in Airtable:", record.id);
+                                    runStats.processed += 1;
+                                    runStats.successes += 1;
+                                    runStats.lastRun = Date.now();
+                                    runStats.lastError = null;
+                                    // Optimistically increment today's count for this account
+                                    if (currentAccount === 'D') {
+                                        todayCountD += 1;
+                                        lastCountAtD = Date.now();
+                                    } else {
+                                        todayCountA += 1;
+                                        lastCountAtA = Date.now();
+                                    }
+                                    chrome.storage.local.set({ todayCountA, todayCountD, lastCountAtA, lastCountAtD });
+                                    // kick a background refresh of the current account's Today count
+                                    refreshTodayCount(currentAccount);
+                                    if (isRunning) {
+                                        nextDelay = getRandomDelay();
+                                        nextFireTime = Date.now() + nextDelay;
+                                        chrome.storage.local.set({ nextFireTime, runStats });
+                                        scheduleNext(nextDelay);
+                                        try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
+                                    }
+                                }).catch((e) => {
+                                    // Even if finalize fails, schedule next to keep running
+                                    runStats.failures += 1;
+                                    runStats.lastRun = Date.now();
+                                    runStats.lastError = `Finalize error: ${formatErr(e)}`;
+                                    chrome.storage.local.set({ runStats });
+                                    if (isRunning) {
+                                        nextDelay = getRandomDelay();
+                                        nextFireTime = Date.now() + nextDelay;
+                                        chrome.storage.local.set({ nextFireTime });
+                                        scheduleNext(nextDelay);
+                                        try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
+                                    }
+                                });
                         }
                 };
                 chrome.runtime.onMessage.addListener(onResponse);
@@ -541,8 +566,6 @@ async function getNextPendingRecord() {
     if (!res.ok) {
         const msg = formatAirtable(json, `${res.status} ${res.statusText}`);
         console.warn('Airtable query failed:', msg);
-        runStats.lastError = `Airtable list error: ${msg}`;
-        chrome.storage.local.set({ runStats });
     }
     return { ok: res.ok, json, url, formula };
     }
@@ -553,7 +576,19 @@ async function getNextPendingRecord() {
         let { ok, json, url, formula } = await fetchWithFormula(`AND(NOT({Comment Done}), NOT({In Progress}), ${excludeLock})`);
         if (!ok || !json.records) {
             console.warn('Strict formula failed or no records; falling back', { view: AIRTABLE_VIEW_ID, formula, url, info: formatAirtable(json, 'no records') });
-            ({ ok, json, url, formula } = await fetchWithFormula(`AND(NOT({Comment Done}), ${excludeLock})`));
+            const acct = currentAccount || 'A';
+            const excludePicked = `OR(LEN({Picked By})=0, NOT({Picked By}='${acct}'))`;
+            ({ ok, json, url, formula } = await fetchWithFormula(`AND(NOT({Comment Done}), ${excludeLock}, ${excludePicked})`));
+            if (ok && json && json.records) {
+                // Clear any stale error caused by strict-query invalid formula
+                runStats.lastError = null;
+                chrome.storage.local.set({ runStats });
+            } else if (!ok) {
+                // Both strict and fallback failed: set lastError now
+                const msg = formatAirtable(json, 'Airtable list error');
+                runStats.lastError = `Airtable list error: ${msg}`;
+                chrome.storage.local.set({ runStats });
+            }
         }
         console.log('Fetched records from Airtable:', { count: json && json.records ? json.records.length : 0, view: AIRTABLE_VIEW_ID, formula, url });
         if (!json || !json.records) return null;
@@ -745,7 +780,7 @@ async function fetchDuplicateUrlsFromAirtable() {
             if (data && Array.isArray(data.records)) {
                 for (const r of data.records) {
                     const u = r.fields && r.fields['Post URL'];
-                    if (u) urls.add(u);
+                    if (u) urls.add(normalizeUrl(u));
                 }
             }
             offset = data && data.offset;
@@ -766,7 +801,7 @@ async function refreshDuplicatesIfStale() {
     const urls = await fetchDuplicateUrlsFromAirtable();
     if (urls) {
         // Merge remote URLs with local ones
-        for (const u of urls) duplicateUrls.add(u);
+    for (const u of urls) duplicateUrls.add(normalizeUrl(u));
         dupLastRefreshed = now;
         chrome.storage.local.set({
             duplicateUrls: Array.from(duplicateUrls),
@@ -777,7 +812,7 @@ async function refreshDuplicatesIfStale() {
 
 function isDuplicate(postUrl) {
     if (!postUrl) return false;
-    return duplicateUrls.has(postUrl);
+    return duplicateUrls.has(normalizeUrl(postUrl));
 }
 
 // ---------- Today's posts helpers ----------

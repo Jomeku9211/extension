@@ -53,7 +53,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Disable Start if no account selected and toggle hint
     const shouldDisable = !hasAccountSelected || !!isActive;
     startButton.disabled = shouldDisable;
-    acctHint.style.display = !hasAccountSelected ? 'block' : 'none';
+    // Only show hint when inactive (so user can still see Stop when active without selection)
+    acctHint.style.display = (!hasAccountSelected && !isActive) ? 'block' : 'none';
   // Error display: show whenever an error exists (even if Active)
   if (lastError) {
       errorRow.style.display = 'block';
@@ -82,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateTimerUI(nextFireTime) {
-    lastNextFireTime = nextFireTime || null;
+  lastNextFireTime = typeof nextFireTime === 'number' ? nextFireTime : null;
     if (!nextFireTime) {
       timerDiv.textContent = 'Next: --:--';
       return;
@@ -132,38 +133,39 @@ document.addEventListener('DOMContentLoaded', () => {
   function pollStatus(force = false) {
     const acct = getSelectedAccount();
     hasAccountSelected = !!acct;
-    if (!hasAccountSelected) {
-      updateStatusUI(false, null);
-      updateTimerUI(null);
-      updateStatsUI({ processed: 0, successes: 0, failures: 0 }, null, null);
-      checkAndShowLock(null);
-      return;
-    }
-    chrome.runtime.sendMessage({ action: 'getStatus', account: acct, force }, (resp) => {
+    chrome.runtime.sendMessage({ action: 'getStatus', account: acct || undefined, force }, (resp) => {
       if (!resp) {
         updateStatusUI(false, null);
         updateTimerUI(null);
         updateStatsUI(null, null, null);
-        checkAndShowLock(acct);
+        checkAndShowLock(acct || null);
         return;
       }
       updateStatusUI(resp.isRunning, resp.runStats && resp.runStats.lastError);
       updateTimerUI(resp.nextFireTime);
-      updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount);
-      checkAndShowLock(acct);
+      const showToday = (typeof resp.todayCount === 'number') ? resp.todayCount : null;
+      updateStatsUI(resp.runStats, resp.startedAt, showToday);
+      checkAndShowLock(acct || null);
     });
   }
 
   startButton.addEventListener('click', () => {
     const acct = getSelectedAccount();
     if (!acct) { startButton.disabled = true; return; }
-    chrome.runtime.sendMessage({ action: 'start', account: acct });
+    chrome.runtime.sendMessage({ action: 'start', account: acct }, (resp) => {
+      if (chrome.runtime.lastError) {
+        updateStatusUI(false, `Start error: ${chrome.runtime.lastError.message || 'unknown'}`);
+        pollStatus(true);
+      }
+    });
   // Optimistic UI: show Active state and start a 2s countdown immediately
   updateStatusUI(true, null);
   const optimisticNext = Date.now() + 2000;
   updateTimerUI(optimisticNext);
   // Give background a brief moment to acquire the lock and persist state
-  setTimeout(() => pollStatus(true), 1000);
+  setTimeout(() => pollStatus(true), 500);
+  // Fallback check after 2500ms: if still not running, force refresh to capture Reason
+  setTimeout(() => pollStatus(true), 2500);
     if (!countdownId) countdownId = setInterval(() => {
       if (lastNextFireTime) updateTimerUI(lastNextFireTime);
       // Occasionally poll to refresh stats and nextFireTime
@@ -175,10 +177,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   stopButton.addEventListener('click', () => {
-    const acct = getSelectedAccount();
-    chrome.runtime.sendMessage({ action: 'stop', account: acct || undefined });
-    // Clear selection after stop
-    clearAccountSelection();
+  // Allow stopping regardless of account radio selection
+  chrome.runtime.sendMessage({ action: 'stop' });
+  // Clear selection after stop
+  clearAccountSelection();
     pollStatus(true);
     if (countdownId) { clearInterval(countdownId); countdownId = null; }
     startButton.disabled = true;

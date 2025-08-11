@@ -15,8 +15,42 @@ let todayCount = 0;
 let lastCountAt = 0;
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // 2 minutes
 
+// Fetch the count of records in the "today" view (paginates until all rows counted)
+async function fetchTodayCount() {
+    try {
+        let count = 0;
+        let offset = undefined;
+        do {
+            const params = new URLSearchParams();
+            params.set('view', AIRTABLE_TODAY_VIEW_ID);
+            params.set('pageSize', '100');
+            if (offset) params.set('offset', offset);
+            const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+            const data = await res.json();
+            if (data && Array.isArray(data.records)) {
+                count += data.records.length;
+            }
+            offset = data && data.offset;
+        } while (offset);
+        todayCount = count;
+        lastCountAt = Date.now();
+        chrome.storage.local.set({ todayCount, lastCountAt });
+        return count;
+    } catch (e) {
+        console.warn('Failed to fetch today count', e);
+        return todayCount;
+    }
+}
+
+function refreshTodayCount() {
+    // Debounce frequent fetches using TTL
+    if (Date.now() - lastCountAt < 10 * 1000) return; // 10s safety
+    fetchTodayCount();
+}
+
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt'], (items) => {
     isRunning = !!items.isRunning;
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
@@ -230,39 +264,6 @@ async function markRecordDone(recordId, tabId) {
                 scheduleNext(nextDelay);
             });
 
-            // Fetch the count of records in the "today" view
-            async function fetchTodayCount() {
-                try {
-                    let count = 0;
-                    let offset = undefined;
-                    do {
-                        const params = new URLSearchParams();
-                        params.set('view', AIRTABLE_TODAY_VIEW_ID);
-                        params.set('pageSize', '100');
-                        if (offset) params.set('offset', offset);
-                        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
-                        const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
-                        const data = await res.json();
-                        if (data && Array.isArray(data.records)) {
-                            count += data.records.length;
-                        }
-                        offset = data && data.offset;
-                    } while (offset);
-                    todayCount = count;
-                    lastCountAt = Date.now();
-                    chrome.storage.local.set({ todayCount, lastCountAt });
-                    return count;
-                } catch (e) {
-                    console.warn('Failed to fetch today count', e);
-                    return todayCount;
-                }
-            }
-
-            function refreshTodayCount() {
-                // Debounce frequent fetches using TTL
-                if (Date.now() - lastCountAt < 10 * 1000) return; // 10s safety
-                fetchTodayCount();
-            }
         }
     });
 

@@ -239,15 +239,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.account === 'D' || request.account === 'A') {
             currentAccount = request.account;
         }
-    const acct = currentAccount;
+        const acct = currentAccount;
         const last = acct === 'D' ? lastCountAtD : lastCountAtA;
         const force = !!request.force;
+        // If forced or stale, fetch fresh count before responding so UI shows it immediately
         if (force || Date.now() - last > TODAY_COUNT_TTL_MS) {
-            refreshTodayCount(acct);
+            (async () => {
+                await fetchTodayCount(acct).catch(()=>{});
+                const countNow = acct === 'D' ? todayCountD : todayCountA;
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount: countNow });
+            })();
+            return true; // async response
+        } else {
+            const count = acct === 'D' ? todayCountD : todayCountA;
+            sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount: count });
+            // synchronous response
         }
-        const count = acct === 'D' ? todayCountD : todayCountA;
-    sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount: count });
-        // No need to return true, since sendResponse is synchronous here
     }
     else if (request.action === 'refreshTodayCount') {
         const acct = (request.account === 'D' || request.account === 'A') ? request.account : currentAccount;
@@ -278,10 +285,10 @@ async function processRecords() {
     }
 
     // Atomically claim a record for this account to avoid both accounts picking the same
-    const record = await claimNextRecord(currentAccount);
-    console.log("Processing record:", record);
+    const claim = await claimNextRecord(currentAccount);
+    console.log("Processing claim:", claim);
 
-    if (!record) {
+    if (!claim || claim.status === 'no-record') {
         console.log("No pending records in Airtable. Stopping.");
         runStats.lastRun = Date.now();
         runStats.lastError = 'No records in Airtable';
@@ -291,9 +298,23 @@ async function processRecords() {
         startedAt = null;
         chrome.alarms.clear('autoCommentTick');
         chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
-    releaseAccountLock(currentAccount).catch(()=>{});
+        releaseAccountLock(currentAccount).catch(()=>{});
         return;
     }
+    if (claim.status !== 'ok') {
+        console.log('Claim failed or conflicted; will retry later');
+        runStats.lastRun = Date.now();
+        if (isRunning) {
+            nextDelay = getRandomDelay();
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ runStats, nextFireTime });
+            scheduleNext(nextDelay);
+        } else {
+            chrome.storage.local.set({ runStats });
+        }
+        return;
+    }
+    const record = claim.record;
 
     // Verify we still own this record after claiming (race protection)
     const owns = await verifyOwnership(record.id, currentAccount);
@@ -343,6 +364,27 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
             // Add a 10-second delay before messaging the content script
             setTimeout(() => {
                 // Try to send message; if it fails due to missing CS, inject once and retry
+                let completed = false;
+                let watchdogTimer = null;
+                const scheduleFailure = (reason) => {
+                    runStats.failures += 1;
+                    runStats.lastRun = Date.now();
+                    runStats.lastError = reason || 'Posting failed';
+                    chrome.storage.local.set({ runStats });
+                    if (isRunning) {
+                        nextDelay = getRandomDelay();
+                        nextFireTime = Date.now() + nextDelay;
+                        chrome.storage.local.set({ nextFireTime });
+                        scheduleNext(nextDelay);
+                    } else {
+                        chrome.storage.local.set({ runStats });
+                    }
+                };
+                const cleanupAndFail = (reason) => {
+                    if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+                    try { chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError); } catch {}
+                    scheduleFailure(reason);
+                };
                 const sendPost = () => chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl }, () => {
                     if (chrome.runtime.lastError) {
                         // Fallback: inject once (ensure lowercase chrome)
@@ -351,8 +393,7 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                 if (chrome.runtime.lastError) {
                                     const injMsg = chrome.runtime.lastError.message || 'unknown injection error';
                                     console.warn('Content script injection failed:', injMsg);
-                                    runStats.lastError = `Content script injection failed: ${injMsg}`;
-                                    chrome.storage.local.set({ runStats });
+                                    cleanupAndFail(`Content script injection failed: ${injMsg}`);
                                     return;
                                 }
                                 chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText, postUrl });
@@ -360,8 +401,7 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                         } catch (e) {
                             const injErr = (e && e.message) ? e.message : String(e);
                             console.warn('chrome.scripting.executeScript threw', injErr);
-                            runStats.lastError = `Content script injection error: ${injErr}`;
-                            chrome.storage.local.set({ runStats });
+                            cleanupAndFail(`Content script injection error: ${injErr}`);
                         }
                     }
                 });
@@ -370,6 +410,8 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                 const onResponse = function(message, senderInfo) {
                         if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
                             chrome.runtime.onMessage.removeListener(onResponse);
+                            completed = true;
+                            if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
                             // Record duplicates (post URL and optional commentId)
                             if (message.postUrl) duplicateUrls.add(message.postUrl);
                             if (message.commentId) duplicateCommentIds.add(message.commentId);
@@ -402,6 +444,14 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                         }
                 };
                 chrome.runtime.onMessage.addListener(onResponse);
+                // Watchdog: if no response within 60s after messaging, consider it a failure
+                watchdogTimer = setTimeout(() => {
+                    chrome.runtime.onMessage.removeListener(onResponse);
+                    if (!completed) {
+                        console.warn('Watchdog timeout: no commentPosted message received');
+                        cleanupAndFail('Timed out waiting for comment to post');
+                    }
+                }, 60000);
             }, 10000); // 10,000 ms = 10 seconds
         }
     });
@@ -470,9 +520,10 @@ async function markRecordDone(recordId, tabId) {
 }
 
 // Attempt to claim a record for the current account by marking In Progress and Picked By
+// Returns { status: 'ok'|'no-record'|'claim-failed'|'claim-error', record }
 async function claimNextRecord(acct) {
     const rec = await getNextPendingRecord();
-    if (!rec) return null;
+    if (!rec) return { status: 'no-record', record: null };
     const id = rec.id;
     try {
         const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${id}`, {
@@ -484,14 +535,20 @@ async function claimNextRecord(acct) {
             body: JSON.stringify({ fields: { 'In Progress': true, 'Picked By': acct } })
         });
         const j = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(`Claim failed: ${formatAirtable(j, res.statusText)}`);
-        return rec;
+        if (!res.ok) {
+            const msg = `Claim failed: ${formatAirtable(j, res.statusText)}`;
+            console.warn(msg);
+            runStats.lastError = msg;
+            chrome.storage.local.set({ runStats });
+            return { status: 'claim-failed', record: null };
+        }
+        return { status: 'ok', record: rec };
     } catch (e) {
-    const msg = formatErr(e);
-    console.warn('Failed to claim record; another worker may have it', msg);
-    runStats.lastError = msg;
-    chrome.storage.local.set({ runStats });
-        return null;
+        const msg = formatErr(e);
+        console.warn('Failed to claim record; another worker may have it', msg);
+        runStats.lastError = msg;
+        chrome.storage.local.set({ runStats });
+        return { status: 'claim-error', record: null };
     }
 }
 

@@ -29,11 +29,33 @@ let dupLastRefreshed = 0;
 const DUP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // ---------- Error formatting helpers ----------
+function safeStringify(obj) {
+    try {
+        const seen = new WeakSet();
+        return JSON.stringify(obj, (key, value) => {
+            if (value instanceof Error) {
+                return { name: value.name, message: value.message, stack: value.stack };
+            }
+            if (typeof value === 'object' && value !== null) {
+                if (seen.has(value)) return '[Circular]';
+                seen.add(value);
+            }
+            return value;
+        });
+    } catch {
+        return String(obj);
+    }
+}
 function formatErr(e, fallback = 'Unexpected error') {
     if (!e) return fallback;
     if (typeof e === 'string') return e;
+    // Handle Fetch Response objects
+    if (typeof Response !== 'undefined' && e instanceof Response) {
+        return `HTTP ${e.status} ${e.statusText}`;
+    }
     if (e && typeof e.message === 'string') return e.message;
-    try { return JSON.stringify(e); } catch { return String(e); }
+    const s = safeStringify(e);
+    return s && s !== '{}"' ? s : String(e);
 }
 function formatAirtable(json, fallback = 'Airtable error') {
     if (!json) return fallback;
@@ -42,7 +64,7 @@ function formatAirtable(json, fallback = 'Airtable error') {
     if (typeof err === 'string') return err;
     if (err.message) return err.message;
     if (err.type) return err.type;
-    try { return JSON.stringify(err); } catch { return String(err); }
+    try { return safeStringify(err); } catch { return String(err); }
 }
 
 // Fetch the count of records in the "today" view (paginates until all rows counted)
@@ -354,7 +376,12 @@ async function getNextPendingRecord() {
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
     const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
     const json = await res.json();
-    if (!res.ok) console.warn('Airtable query failed:', formatAirtable(json));
+    if (!res.ok) {
+        const msg = formatAirtable(json, `${res.status} ${res.statusText}`);
+        console.warn('Airtable query failed:', msg);
+        runStats.lastError = `Airtable list error: ${msg}`;
+        chrome.storage.local.set({ runStats });
+    }
     return { ok: res.ok, json };
     }
 
@@ -370,7 +397,10 @@ async function getNextPendingRecord() {
         if (!json || !json.records) return null;
         return json.records.length > 0 ? json.records[0] : null;
     } catch (e) {
-        console.error('Airtable fetch error', e);
+    const msg = formatErr(e);
+    console.error('Airtable fetch error', msg);
+    runStats.lastError = `Airtable list error: ${msg}`;
+    chrome.storage.local.set({ runStats });
         return null;
     }
 }
@@ -413,7 +443,10 @@ async function claimNextRecord(acct) {
         if (!res.ok) throw new Error(`Claim failed: ${formatAirtable(j, res.statusText)}`);
         return rec;
     } catch (e) {
-        console.warn('Failed to claim record; another worker may have it', e);
+    const msg = formatErr(e);
+    console.warn('Failed to claim record; another worker may have it', msg);
+    runStats.lastError = msg;
+    chrome.storage.local.set({ runStats });
         return null;
     }
 }
@@ -488,7 +521,10 @@ async function fetchDuplicateUrlsFromAirtable() {
             const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
             const data = await res.json();
             if (!res.ok) {
-                console.warn('Duplicate view fetch failed:', formatAirtable(data, res.statusText));
+        const msg = formatAirtable(data, res.statusText);
+        console.warn('Duplicate view fetch failed:', msg);
+        runStats.lastError = `Airtable duplicate view error: ${msg}`;
+        chrome.storage.local.set({ runStats });
                 break;
             }
             if (data && Array.isArray(data.records)) {
@@ -501,7 +537,10 @@ async function fetchDuplicateUrlsFromAirtable() {
         } while (offset);
         return urls;
     } catch (e) {
-        console.warn('Failed to fetch duplicate URLs', e);
+    const msg = formatErr(e);
+    console.warn('Failed to fetch duplicate URLs', msg);
+    runStats.lastError = `Airtable duplicate view error: ${msg}`;
+    chrome.storage.local.set({ runStats });
         return null;
     }
 }

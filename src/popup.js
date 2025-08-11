@@ -167,7 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!countdownId) countdownId = setInterval(() => {
       if (lastNextFireTime) updateTimerUI(lastNextFireTime);
       // Occasionally poll to refresh stats and nextFireTime
-      pollTick = (pollTick + 1) % 5;
+      pollTick = (pollTick + 1) % 4;
       if (pollTick === 0) pollStatus(false);
     }, 1000);
     // Disable Start quickly to avoid double clicks
@@ -195,6 +195,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (lastNextFireTime) updateTimerUI(lastNextFireTime);
     renderStartedAt();
   }, 1000);
+
+  // Listen for background status updates and refresh immediately
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.action === 'statusUpdated') {
+      pollStatus(true);
+    }
+  });
 
   // Account selection handlers
   acctRadios.forEach(r => r.addEventListener('change', () => {

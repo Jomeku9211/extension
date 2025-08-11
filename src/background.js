@@ -317,12 +317,13 @@ async function processRecords() {
         console.log("No pending records in Airtable. Stopping.");
         runStats.lastRun = Date.now();
         runStats.lastError = `No records in Airtable (view: ${AIRTABLE_VIEW_ID || 'default'})`;
-        // Stop the worker and clear next alarm
+    // Stop the worker and clear next alarm
         isRunning = false;
         nextFireTime = null;
         startedAt = null;
         chrome.alarms.clear('autoCommentTick');
         chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
         releaseAccountLock(currentAccount).catch(()=>{});
         return;
     }
@@ -334,6 +335,7 @@ async function processRecords() {
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);
+            try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
         } else {
             chrome.storage.local.set({ runStats });
         }
@@ -484,11 +486,27 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                                     lastCountAtA = Date.now();
                                 }
                                 chrome.storage.local.set({ todayCountA, todayCountD, lastCountAtA, lastCountAtD });
+                                // kick a background refresh of the current account's Today count
+                                refreshTodayCount(currentAccount);
                                 if (isRunning) {
                                     nextDelay = getRandomDelay();
                                     nextFireTime = Date.now() + nextDelay;
                                     chrome.storage.local.set({ nextFireTime, runStats });
                                     scheduleNext(nextDelay);
+                                    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
+                                }
+                            }).catch((e) => {
+                                // Even if finalize fails, schedule next to keep running
+                                runStats.failures += 1;
+                                runStats.lastRun = Date.now();
+                                runStats.lastError = `Finalize error: ${formatErr(e)}`;
+                                chrome.storage.local.set({ runStats });
+                                if (isRunning) {
+                                    nextDelay = getRandomDelay();
+                                    nextFireTime = Date.now() + nextDelay;
+                                    chrome.storage.local.set({ nextFireTime });
+                                    scheduleNext(nextDelay);
+                                    try { chrome.runtime.sendMessage({ action: 'statusUpdated' }); } catch {}
                                 }
                             });
                         }
@@ -635,27 +653,30 @@ async function claimNextRecord(acct) {
 // Mark the record as done and stamp the account that posted it; clear in-progress
 async function finalizeRecord(recordId, acct, tabId) {
     const commenter = acct === 'D' ? 'Dheeraj' : 'Abhilasha';
-    let res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
-        method: 'PATCH',
-        headers: {
-            Authorization: `Bearer ${AIRTABLE_API_KEY}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ fields: { 'Comment Done': true, 'In Progress': false, 'Picked By': acct, 'Comment By': commenter } })
-    });
-    if (!res.ok) {
-        let j = await res.json().catch(() => ({}));
-        // Retry without 'In Progress'
-        res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
-            method: 'PATCH',
-            headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fields: { 'Comment Done': true, 'Picked By': acct, 'Comment By': commenter } })
-        });
-        if (!res.ok) {
-            j = await res.json().catch(() => ({}));
-            runStats.lastError = `Finalize failed: ${formatAirtable(j, res.statusText)}`;
-            chrome.storage.local.set({ runStats });
+    const variants = [
+        { 'Comment Done': true, 'In Progress': false, 'Picked By': acct, 'Comment By': commenter },
+        { 'Comment Done': true, 'Picked By': acct, 'Comment By': commenter },
+        { 'Comment Done': true, 'Picked By': acct },
+        { 'Comment Done': true }
+    ];
+    let ok = false; let lastErr = null;
+    for (const fields of variants) {
+        try {
+            const res = await fetch(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`, {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fields })
+            });
+            if (res.ok) { ok = true; break; }
+            const j = await res.json().catch(() => ({}));
+            lastErr = formatAirtable(j, res.statusText);
+        } catch (e) {
+            lastErr = formatErr(e);
         }
+    }
+    if (!ok && lastErr) {
+        runStats.lastError = `Finalize failed: ${lastErr}`;
+        chrome.storage.local.set({ runStats });
     }
     if (tabId) {
         chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);

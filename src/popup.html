@@ -19,11 +19,23 @@
     </style>
 </head>
 <body>
-    <div id="status" style="margin-bottom: 10px; color: green;">Inactive</div>
-<div id="timer" style="margin-bottom: 10px;">Next comment in: --:--</div>
-<button id="start-button">Start</button>
-<button id="stop-button">Stop</button>
-<script src="popup.js"></script>
+        <div id="status" style="margin-bottom: 6px; color: red;">Inactive</div>
+        <div id="timer" style="margin-bottom: 10px;">Next: --:--</div>
+
+        <div id="stats" style="font-size: 12px; margin-bottom: 10px; line-height: 1.4;">
+            <div>Processed: <span id="stat-processed">0</span></div>
+            <div>Successes: <span id="stat-successes">0</span> • Failures: <span id="stat-failures">0</span></div>
+            <div>Last run: <span id="stat-lastRun">--</span></div>
+            <div>Last error: <span id="stat-lastError">--</span></div>
+        </div>
+
+        <button id="start-button">Start</button>
+        <button id="stop-button">Stop</button>
+        <div style="margin-top:8px; font-size: 12px;">
+            <a href="#" id="open-options">Open Options</a>
+        </div>
+
+        <script src="popup.js"></script>
 
 </body>
 </html>

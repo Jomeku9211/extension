@@ -2,15 +2,21 @@
 let CONFIG = null;
 
 let isRunning = false;
-let intervalId = null;
 let nextDelay = null;
 let nextFireTime = null;
+let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
 
-setInterval(() => {
-    if (isRunning) {
-        console.log("Auto-commenting is active... (heartbeat every 10 seconds)");
+// Restore state on boot
+chrome.storage.local.get(['isRunning','nextFireTime','runStats'], (items) => {
+    isRunning = !!items.isRunning;
+    nextFireTime = items.nextFireTime || null;
+    runStats = items.runStats || runStats;
+    if (isRunning && nextFireTime && Date.now() < nextFireTime) {
+        // An alarm may already exist; ensure one is scheduled
+        const delayMs = Math.max(0, nextFireTime - Date.now());
+        chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
     }
-}, 10000);
+});
 
 function getRandomDelay() {
     // Random delay between 7 and 10 minutes
@@ -52,24 +58,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             isRunning = true;
             nextDelay = getRandomDelay();
             nextFireTime = Date.now() + nextDelay;
-            startAutoCommenting();
+            chrome.storage.local.set({ isRunning, nextFireTime });
+            scheduleNext(nextDelay);
         });
     } 
     else if (request.action === "stop") {
         isRunning = false;
-        if (intervalId) clearTimeout(intervalId);
-        intervalId = null;
         nextFireTime = null;
+        chrome.alarms.clear('autoCommentTick');
+        chrome.storage.local.set({ isRunning, nextFireTime });
     }
     else if (request.action === "getStatus") {
-        sendResponse({ isRunning, nextFireTime });
+        sendResponse({ isRunning, nextFireTime, runStats });
         // No need to return true, since sendResponse is synchronous here
     }
 });
 
-function startAutoCommenting() {
+function scheduleNext(delayMs) {
     if (!isRunning) return;
-    processRecords();
+    chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
 }
 
 async function processRecords() {
@@ -84,6 +91,9 @@ async function processRecords() {
 
     if (!record) {
         console.log("No more pending records.");
+        runStats.lastRun = Date.now();
+        runStats.lastError = null;
+        chrome.storage.local.set({ runStats });
         return;
     }
 
@@ -110,12 +120,15 @@ chrome.tabs.create({ url: postUrl, active: true }, (tab) => {
                             chrome.runtime.onMessage.removeListener(onResponse);
                             markRecordDone(record.id, tab.id).then(() => {
                                 console.log("Marked record as done in Airtable:", record.id);
+                                runStats.processed += 1;
+                                runStats.successes += 1;
+                                runStats.lastRun = Date.now();
+                                runStats.lastError = null;
                                 if (isRunning) {
                                     nextDelay = getRandomDelay();
                                     nextFireTime = Date.now() + nextDelay;
-                                    setTimeout(() => {
-                                        processRecords();
-                                    }, nextDelay);
+                                    chrome.storage.local.set({ nextFireTime, runStats });
+                                    scheduleNext(nextDelay);
                                 }
                             });
                         }
@@ -172,3 +185,22 @@ async function markRecordDone(recordId, tabId) {
         chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
     }
 }
+    // Handle the alarm tick to resume work even if the service worker was suspended
+    chrome.alarms.onAlarm.addListener((alarm) => {
+        if (alarm && alarm.name === 'autoCommentTick') {
+            if (!isRunning) return;
+            processRecords().catch(err => {
+                console.error('processRecords error', err);
+                runStats.failures += 1;
+                runStats.lastRun = Date.now();
+                runStats.lastError = String(err && err.message ? err.message : err);
+                chrome.storage.local.set({ runStats });
+                // schedule a retry with a fresh delay to avoid tight loop
+                nextDelay = getRandomDelay();
+                nextFireTime = Date.now() + nextDelay;
+                chrome.storage.local.set({ nextFireTime });
+                scheduleNext(nextDelay);
+            });
+        }
+    });
+

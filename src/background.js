@@ -279,19 +279,30 @@ chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
 
                     const onResponse = function(message, senderInfo) {
                         if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
+                            console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
                             chrome.runtime.onMessage.removeListener(onResponse);
-                            markRecordDone(record.id, tab.id).then(() => {
-                                console.log("Marked record as done in Airtable:", record.id);
-                                runStats.processed += 1;
-                                runStats.successes += 1;
-                                runStats.lastRun = Date.now();
-                                runStats.lastError = null;
-                                // Optimistically bump today counter
-                                todayCount += 1;
-                                lastCountAt = Date.now();
-                                chrome.storage.local.set({ todayCount, lastCountAt });
-                                // Clear active task on success
-                                clearActiveTask().catch(() => {});
+                            (async () => {
+                                console.log('[finalize] Calling markRecordDone for record:', record.id, 'tab:', tab.id);
+                                try {
+                                    await markRecordDone(record.id, tab.id);
+                                    console.log('[finalize] Marked record as done in Airtable:', record.id);
+                                    runStats.processed += 1;
+                                    runStats.successes += 1;
+                                    runStats.lastRun = Date.now();
+                                    runStats.lastError = null;
+                                    // Optimistically bump today counter
+                                    todayCount += 1;
+                                    lastCountAt = Date.now();
+                                    chrome.storage.local.set({ todayCount, lastCountAt });
+                                    // Clear active task on success
+                                    clearActiveTask().catch(() => {});
+                                } catch (err) {
+                                    console.error('[finalize] Error in markRecordDone:', err);
+                                    runStats.failures += 1;
+                                    runStats.lastRun = Date.now();
+                                    runStats.lastError = String(err && err.message ? err.message : err);
+                                    chrome.storage.local.set({ runStats });
+                                }
                                 if (isRunning) {
                                     nextDelay = getRandomDelay();
                                     nextFireTime = Date.now() + nextDelay;
@@ -299,7 +310,7 @@ chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
                                     scheduleNext(nextDelay);
                                 }
                                 isProcessingTick = false;
-                            });
+                            })();
                         }
                     };
                     chrome.runtime.onMessage.addListener(onResponse);
@@ -456,9 +467,14 @@ async function markRecordDone(recordId, tabId) {
             throw new Error(`Airtable PATCH (Done+By+On) failed (${res.status}): ${text1}`);
         }
     }
-    // Close the tab after marking as done
+    // Close the tab after marking as done (only after PATCH completes)
     if (tabId) {
-    chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
+        try {
+            chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
+            console.log('[finalize] Closed tab after Airtable update:', tabId);
+        } catch (e) {
+            console.warn('[finalize] Failed to close tab:', tabId, e);
+        }
     }
 }
     // Handle the alarm tick to resume work even if the service worker was suspended

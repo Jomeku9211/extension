@@ -99,6 +99,7 @@ async function waitForEditorAndTypeComment(commentText) {
         postButton.click();
     // Dwell 5s before notifying background to close tab
     await sleep(5000);
+        console.log('[content] Sending commentPosted message for', location.href);
         chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
         return;
     }
@@ -107,6 +108,7 @@ async function waitForEditorAndTypeComment(commentText) {
     if (!commentPosted) {
     commentPosted = true;
     await sleep(5000);
+        console.log('[content] Sending commentPosted message for', location.href);
     chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
     }
 }

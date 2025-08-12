@@ -1,3 +1,17 @@
+// Fallback: periodically check for stuck tabs and force finalize/close if needed
+setInterval(async () => {
+    const active = await getActiveTask();
+    if (active && active.tabId && active.startedAt && Date.now() - active.startedAt > 2 * 60 * 1000) {
+        try {
+            console.warn('[fallback] Forcing finalize/close for stuck tab', active.tabId, 'record', active.recordId);
+            await markRecordDone(active.recordId, null);
+            chrome.tabs.remove(active.tabId, () => void chrome.runtime.lastError);
+            await clearActiveTask();
+        } catch (e) {
+            console.error('[fallback] Error during forced finalize/close:', e);
+        }
+    }
+}, 30000); // check every 30s
 // Airtable config: fixed and constant
 const AIRTABLE_API_KEY = 'patFClficxpGIUnJF.be5a51a7e3fabe7337cd2cb13dc3f10234fc52d8a1f60e012eb68be7b2fcc982';
 const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
@@ -281,20 +295,12 @@ chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
                         if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
                             console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
                             chrome.runtime.onMessage.removeListener(onResponse);
-                            (async () => {
+                            // Start Airtable update immediately
+                            const finalizePromise = (async () => {
                                 try {
-                                    console.log('[finalize] Waiting 5s after comment before updating Airtable...');
-                                    await new Promise(res => setTimeout(res, 5000));
-                                    console.log('[finalize] 5s wait done. Updating Airtable for record:', record.id);
+                                    console.log('[finalize] Immediately updating Airtable for record:', record.id);
                                     await markRecordDone(record.id, null); // Do not close tab in markRecordDone
                                     console.log('[finalize] Marked record as done in Airtable:', record.id);
-                                    // Now close the tab
-                                    try {
-                                        chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
-                                        console.log('[finalize] Closed tab after Airtable update:', tab.id);
-                                    } catch (e) {
-                                        console.warn('[finalize] Failed to close tab:', tab.id, e);
-                                    }
                                     runStats.processed += 1;
                                     runStats.successes += 1;
                                     runStats.lastRun = Date.now();
@@ -312,6 +318,20 @@ chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
                                     runStats.lastError = String(err && err.message ? err.message : err);
                                     chrome.storage.local.set({ runStats });
                                 }
+                            })();
+                            // In parallel, wait 5s then close the tab
+                            (async () => {
+                                await new Promise(res => setTimeout(res, 5000));
+                                try {
+                                    chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
+                                    console.log('[finalize] Closed tab after 5s dwell:', tab.id);
+                                } catch (e) {
+                                    console.warn('[finalize] Failed to close tab:', tab.id, e);
+                                }
+                            })();
+                            // After both, schedule next
+                            (async () => {
+                                await finalizePromise;
                                 if (isRunning) {
                                     nextDelay = getRandomDelay();
                                     nextFireTime = Date.now() + nextDelay;

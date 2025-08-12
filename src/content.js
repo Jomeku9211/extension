@@ -92,23 +92,45 @@ async function waitForEditorAndTypeComment(commentText) {
     await sleep(1000 + Math.random() * 1200);
 
     const postButton = document.querySelector('.comments-comment-box__submit-button--cr');
+
     if (postButton && !commentPosted) {
         dispatchHover(postButton);
         await sleep(300 + Math.random() * 700);
         commentPosted = true;
         postButton.click();
-    // Dwell 5s before notifying background to close tab
-    await sleep(5000);
+        // Dwell 5s before notifying background to close tab
+        await sleep(5000);
         console.log('[content] Sending commentPosted message for', location.href);
-        chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
+        chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href }, (resp) => {
+            if (chrome.runtime.lastError) {
+                console.warn('[content] Message send error:', chrome.runtime.lastError.message);
+            } else {
+                console.log('[content] Message sent, response:', resp);
+            }
+        });
+        // Fallback: resend after 10s if not acknowledged
+        setTimeout(() => {
+            console.log('[content] Fallback: resending commentPosted for', location.href);
+            chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
+        }, 10000);
         return;
     }
 
     // If no button found, still notify after delay to allow background to proceed
     if (!commentPosted) {
-    commentPosted = true;
-    await sleep(5000);
+        commentPosted = true;
+        await sleep(5000);
         console.log('[content] Sending commentPosted message for', location.href);
-    chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
+        chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href }, (resp) => {
+            if (chrome.runtime.lastError) {
+                console.warn('[content] Message send error:', chrome.runtime.lastError.message);
+            } else {
+                console.log('[content] Message sent, response:', resp);
+            }
+        });
+        setTimeout(() => {
+            console.log('[content] Fallback: resending commentPosted for', location.href);
+            chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
+        }, 10000);
     }
 }

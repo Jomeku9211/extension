@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "CoderFarm commenter",
-  "version": "1.1",
-  "description": "Automatically comments on LinkedIn posts using data from Airtable.",
+  "name": "CoderFarm commenter (main)",
+  "version": "1.1.20250812",
+  "description": "Automatically comments on LinkedIn posts using data from Airtable. Build 2025-08-12.",
   "permissions": [
   "tabs",
   "scripting",

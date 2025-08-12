@@ -6,9 +6,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const processedEl = document.getElementById('stat-processed');
     const successesEl = document.getElementById('stat-successes');
     const failuresEl = document.getElementById('stat-failures');
+    const todayEl = document.getElementById('stat-today');
         const startedAtEl = document.getElementById('stat-startedAt');
 
     let countdownId = null;
+    let lastPollAt = 0;
     let lastNextFireTime = null;
         let lastStartedAt = null;
 
@@ -35,20 +37,24 @@ document.addEventListener('DOMContentLoaded', () => {
         timerDiv.textContent = `Next: ${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
     }
 
-            function updateStatsUI(runStats, startedAt) {
+            function updateStatsUI(runStats, startedAt, todayCount) {
         const rs = runStats || {};
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
         failuresEl.textContent = rs.failures || 0;
+                if (typeof todayCount === 'number') todayEl.textContent = todayCount;
                 lastStartedAt = startedAt || null;
                 renderStartedAt();
     }
 
-            function formatHHMMSS(date) {
-                const hh = date.getHours().toString().padStart(2, '0');
+            function formatHHmmAmPm(date) {
+                let h = date.getHours();
+                const ampm = h >= 12 ? 'PM' : 'AM';
+                h = h % 12;
+                if (h === 0) h = 12;
+                const hh = h.toString().padStart(2, '0');
                 const mm = date.getMinutes().toString().padStart(2, '0');
-                const ss = date.getSeconds().toString().padStart(2, '0');
-                return `${hh}:${mm}:${ss}`;
+                return `${hh}:${mm} ${ampm}`;
             }
 
             function formatAgo(ms) {
@@ -70,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const d = new Date(lastStartedAt);
-                const label = formatHHMMSS(d);
+                const label = formatHHmmAmPm(d);
                 const ago = formatAgo(Date.now() - d.getTime());
                 startedAtEl.textContent = `${label} (${ago})`;
             }
@@ -85,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             updateStatusUI(resp.isRunning);
             updateTimerUI(resp.nextFireTime);
-            updateStatsUI(resp.runStats, resp.startedAt);
+            updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount);
         });
     }
 
@@ -102,7 +108,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     stopButton.addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'stop' });
-        pollStatus();
+    // Optimistically reset UI stats to 0 immediately
+    processedEl.textContent = '0';
+    successesEl.textContent = '0';
+    failuresEl.textContent = '0';
+    pollStatus();
         if (countdownId) { clearInterval(countdownId); countdownId = null; }
         startButton.disabled = false;
     });
@@ -111,8 +121,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial poll and ticking
     pollStatus();
+    // Kick an immediate today count fetch for freshness
+    chrome.runtime.sendMessage({ action: 'getTodayNow' }, (resp) => {
+        if (resp && typeof resp.todayCount === 'number') {
+            todayEl.textContent = resp.todayCount;
+        }
+    });
     countdownId = setInterval(() => {
         if (lastNextFireTime) updateTimerUI(lastNextFireTime);
         renderStartedAt();
+        // Periodically refresh full status so async todayCount fetch reflects in UI
+        const now = Date.now();
+        if (now - lastPollAt > 5000) { // every 5s
+            lastPollAt = now;
+            pollStatus();
+        }
     }, 1000);
 });

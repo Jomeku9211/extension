@@ -282,10 +282,19 @@ chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
                             console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
                             chrome.runtime.onMessage.removeListener(onResponse);
                             (async () => {
-                                console.log('[finalize] Calling markRecordDone for record:', record.id, 'tab:', tab.id);
                                 try {
-                                    await markRecordDone(record.id, tab.id);
+                                    console.log('[finalize] Waiting 5s after comment before updating Airtable...');
+                                    await new Promise(res => setTimeout(res, 5000));
+                                    console.log('[finalize] 5s wait done. Updating Airtable for record:', record.id);
+                                    await markRecordDone(record.id, null); // Do not close tab in markRecordDone
                                     console.log('[finalize] Marked record as done in Airtable:', record.id);
+                                    // Now close the tab
+                                    try {
+                                        chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
+                                        console.log('[finalize] Closed tab after Airtable update:', tab.id);
+                                    } catch (e) {
+                                        console.warn('[finalize] Failed to close tab:', tab.id, e);
+                                    }
                                     runStats.processed += 1;
                                     runStats.successes += 1;
                                     runStats.lastRun = Date.now();
@@ -372,9 +381,8 @@ async function fetchSeenPostUrlsFromView(viewId) {
     return seen;
 }
 
-// Fetch up to N pending records and return the first whose Post URL is not in the seen set
+// Fetch up to N pending records, mark duplicates as done, and return the first non-duplicate
 async function getNextPendingRecordNonDuplicate(limit = 100) {
-    // Build the seen set from the duplicate-check view
     const seen = AIRTABLE_DUPLICATE_VIEW_ID ? await fetchSeenPostUrlsFromView(AIRTABLE_DUPLICATE_VIEW_ID) : new Set();
 
     // Fetch a page of pending records
@@ -387,16 +395,24 @@ async function getNextPendingRecordNonDuplicate(limit = 100) {
     const data = await response.json();
     if (!data || !Array.isArray(data.records) || data.records.length === 0) return null;
 
+    let firstNonDuplicate = null;
     for (const rec of data.records) {
         const postUrl = rec.fields && rec.fields['Post URL'];
         if (!postUrl) continue;
         const norm = normalizePostUrl(postUrl);
-        if (!seen.has(norm)) {
-            return rec;
+        if (seen.has(norm)) {
+            // Mark duplicate as done (no tab open)
+            try {
+                console.log('[dedupe] Marking duplicate as done:', rec.id, postUrl);
+                await markRecordDone(rec.id, null);
+            } catch (e) {
+                console.warn('[dedupe] Failed to mark duplicate as done:', rec.id, e);
+            }
+            continue;
         }
+        if (!firstNonDuplicate) firstNonDuplicate = rec;
     }
-    // If all candidates are duplicates, return null to wait for next cycle
-    return null;
+    return firstNonDuplicate;
 }
 
 async function getNextPendingRecord() {
@@ -467,15 +483,7 @@ async function markRecordDone(recordId, tabId) {
             throw new Error(`Airtable PATCH (Done+By+On) failed (${res.status}): ${text1}`);
         }
     }
-    // Close the tab after marking as done (only after PATCH completes)
-    if (tabId) {
-        try {
-            chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
-            console.log('[finalize] Closed tab after Airtable update:', tabId);
-        } catch (e) {
-            console.warn('[finalize] Failed to close tab:', tabId, e);
-        }
-    }
+    // Tab close is now handled by the caller after PATCH completes
 }
     // Handle the alarm tick to resume work even if the service worker was suspended
     chrome.alarms.onAlarm.addListener((alarm) => {

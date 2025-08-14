@@ -104,15 +104,27 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1000);
         // Disable Start quickly to avoid double clicks
         startButton.disabled = true;
+        
+        // Immediately reset UI stats to 0 on start
+        processedEl.textContent = '0';
+        successesEl.textContent = '0';
+        failuresEl.textContent = '0';
+        
+        // Fetch fresh today count
+        chrome.runtime.sendMessage({ action: 'getTodayNow' }, (resp) => {
+            if (resp && typeof resp.todayCount === 'number') {
+                todayEl.textContent = resp.todayCount;
+            }
+        });
     });
 
     stopButton.addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'stop' });
-    // Optimistically reset UI stats to 0 immediately
-    processedEl.textContent = '0';
-    successesEl.textContent = '0';
-    failuresEl.textContent = '0';
-    pollStatus();
+        // Optimistically reset UI stats to 0 immediately
+        processedEl.textContent = '0';
+        successesEl.textContent = '0';
+        failuresEl.textContent = '0';
+        pollStatus();
         if (countdownId) { clearInterval(countdownId); countdownId = null; }
         startButton.disabled = false;
     });

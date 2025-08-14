@@ -18,7 +18,7 @@ const AIRTABLE_BASE_ID = 'appD9VxZrOhiQY9VB';
 const AIRTABLE_TABLE_ID = 'tblyhMPmCt87ORo3t';
 const AIRTABLE_VIEW_ID = 'viwiRzf62qaMKGQoG';
 const COMMENT_BY = 'Dheeraj';
-// Today view (for single-account D)
+// Today view (for single-account D) - This should be the Comment form view
 const AIRTABLE_TODAY_VIEW_ID = 'viwjzxpzCC24wtkfc';
 // View to check for already-commented posts to avoid duplicates
 const AIRTABLE_DUPLICATE_VIEW_ID = 'viwhyoCkHret6DqWe';
@@ -147,9 +147,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         nextFireTime = null;
         startedAt = null;
         chrome.alarms.clear('autoCommentTick');
-    // Reset stats on Stop as requested
-    runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
-    chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+        // Reset stats on Stop as requested
+        runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
     }
     else if (request.action === "getStatus") {
         refreshTodayCountIfStale();
@@ -247,11 +247,11 @@ async function processRecords() {
     console.log("Processing record:", record);
 
     if (!record) {
-    console.log("No pending records (or all were duplicates). Will check again later.");
+        console.log("No pending records (or all were duplicates). Will check again later.");
         runStats.lastRun = Date.now();
         runStats.lastError = null;
         if (isRunning) {
-                nextDelay = getRandomDelay(); // Random delay between 7 and 10 minutes
+            nextDelay = getRandomDelay(); // Random delay between 7 and 10 minutes
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);
@@ -263,94 +263,137 @@ async function processRecords() {
         return;
     }
 
+    // Validate that the record has required fields
     const postUrl = record.fields["Post URL"];
     const commentText = record.fields["Generated Comment"];
+    
+    if (!postUrl || !commentText) {
+        console.warn(`Record ${record.id} missing required fields:`, {
+            hasPostUrl: !!postUrl,
+            hasCommentText: !!commentText,
+            fields: record.fields
+        });
+        
+        // Mark this record as done to avoid getting stuck on it
+        try {
+            await markRecordDone(record.id, null);
+            console.log(`Marked incomplete record ${record.id} as done to avoid getting stuck`);
+        } catch (e) {
+            console.error(`Failed to mark incomplete record ${record.id} as done:`, e);
+        }
+        
+        // Schedule next attempt
+        if (isRunning) {
+            nextDelay = 30 * 1000; // Try again in 30 seconds
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ runStats, nextFireTime });
+            scheduleNext(nextDelay);
+        }
+        isProcessingTick = false;
+        return;
+    }
+
     console.log(`Opening LinkedIn post: ${postUrl}`);
 
     // Persist the active task immediately to avoid duplicate opens on SW restart
     await setActiveTask({ recordId: record.id, postUrl, startedAt: Date.now() });
 
-chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
-    // Update active task with tabId
-    try {
-        const active = await getActiveTask();
-        if (active && active.postUrl === postUrl && !active.tabId) {
-            active.tabId = tab && tab.id;
-            await setActiveTask(active);
-        }
-    } catch {}
-    chrome.tabs.onUpdated.addListener(function listener(tabId, changeInfo) {
-        if (tabId === tab.id && changeInfo.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(listener);
+    chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
+        // Update active task with tabId
+        try {
+            const active = await getActiveTask();
+            if (active && active.postUrl === postUrl && !active.tabId) {
+                active.tabId = tab && tab.id;
+                await setActiveTask(active);
+            }
+        } catch {}
+        
+        chrome.tabs.onUpdated.addListener(function listener(tabId, changeInfo) {
+            if (tabId === tab.id && changeInfo.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(listener);
 
-            // Add a 10-second delay before injecting the content script
-            setTimeout(() => {
-                chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    files: ['src/content.js']
-                }, () => {
-                    chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText });
+                // Add a 10-second delay before injecting the content script
+                setTimeout(() => {
+                    chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        files: ['src/content.js']
+                    }, () => {
+                        chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText });
 
-                    const onResponse = function(message, senderInfo) {
-                        if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
-                            console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
-                            chrome.runtime.onMessage.removeListener(onResponse);
-                            // Start Airtable update immediately
-                            const finalizePromise = (async () => {
-                                try {
-                                    console.log('[finalize] Immediately updating Airtable for record:', record.id);
-                                    await markRecordDone(record.id, null); // Do not close tab in markRecordDone
-                                    console.log('[finalize] Marked record as done in Airtable:', record.id);
-                                    runStats.processed += 1;
-                                    runStats.successes += 1;
-                                    runStats.lastRun = Date.now();
-                                    runStats.lastError = null;
-                                    // Optimistically bump today counter
-                                    todayCount += 1;
-                                    lastCountAt = Date.now();
-                                    chrome.storage.local.set({ todayCount, lastCountAt });
-                                    // Clear active task on success
-                                    clearActiveTask().catch(() => {});
-                                } catch (err) {
-                                    console.error('[finalize] Error in markRecordDone:', err);
-                                    runStats.failures += 1;
-                                    runStats.lastRun = Date.now();
-                                    runStats.lastError = String(err && err.message ? err.message : err);
-                                    chrome.storage.local.set({ runStats });
-                                }
-                            })();
-                            // In parallel, wait 5s then close the tab
-                            (async () => {
-                                await new Promise(res => setTimeout(res, 5000));
-                                try {
-                                    chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
-                                    console.log('[finalize] Closed tab after 5s dwell:', tab.id);
-                                } catch (e) {
-                                    console.warn('[finalize] Failed to close tab:', tab.id, e);
-                                }
-                            })();
-                            // After both, schedule next
-                            (async () => {
-                                await finalizePromise;
-                                if (isRunning) {
-                                    nextDelay = getRandomDelay();
-                                    nextFireTime = Date.now() + nextDelay;
-                                    chrome.storage.local.set({ nextFireTime, runStats });
-                                    scheduleNext(nextDelay);
-                                }
-                                isProcessingTick = false;
-                            })();
-                        }
-                    };
-                    chrome.runtime.onMessage.addListener(onResponse);
-                });
-            }, 10000); // 10,000 ms = 10 seconds
-        }
+                        const onResponse = function(message, senderInfo) {
+                            if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
+                                console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
+                                chrome.runtime.onMessage.removeListener(onResponse);
+                                
+                                // Start Airtable update immediately
+                                const finalizePromise = (async () => {
+                                    try {
+                                        console.log('[finalize] Immediately updating Airtable for record:', record.id);
+                                        await markRecordDone(record.id, null); // Do not close tab in markRecordDone
+                                        console.log('[finalize] Marked record as done in Airtable:', record.id);
+                                        runStats.processed += 1;
+                                        runStats.successes += 1;
+                                        runStats.lastRun = Date.now();
+                                        runStats.lastError = null;
+                                        // Optimistically bump today counter
+                                        todayCount += 1;
+                                        lastCountAt = Date.now();
+                                        chrome.storage.local.set({ todayCount, lastCountAt });
+                                        // Clear active task on success
+                                        await clearActiveTask();
+                                    } catch (err) {
+                                        console.error('[finalize] Error in markRecordDone:', err);
+                                        runStats.failures += 1;
+                                        runStats.lastRun = Date.now();
+                                        runStats.lastError = String(err && err.message ? err.message : err);
+                                        chrome.storage.local.set({ runStats });
+                                    }
+                                })();
+                                
+                                // In parallel, wait 5s then close the tab
+                                (async () => {
+                                    await new Promise(res => setTimeout(res, 5000));
+                                    try {
+                                        console.log(`[finalize] Attempting to close tab ${tab.id}`);
+                                        const tabExists = await tabsGet(tab.id);
+                                        if (tabExists) {
+                                            chrome.tabs.remove(tab.id, () => {
+                                                if (chrome.runtime.lastError) {
+                                                    console.warn('[finalize] Tab close error:', chrome.runtime.lastError.message);
+                                                } else {
+                                                    console.log('[finalize] Successfully closed tab:', tab.id);
+                                                }
+                                            });
+                                        } else {
+                                            console.log('[finalize] Tab already closed or not found:', tab.id);
+                                        }
+                                    } catch (e) {
+                                        console.warn('[finalize] Failed to close tab:', tab.id, e);
+                                    }
+                                })();
+                                
+                                // After both, schedule next
+                                (async () => {
+                                    await finalizePromise;
+                                    if (isRunning) {
+                                        nextDelay = getRandomDelay();
+                                        nextFireTime = Date.now() + nextDelay;
+                                        chrome.storage.local.set({ nextFireTime, runStats });
+                                        scheduleNext(nextDelay);
+                                    }
+                                    isProcessingTick = false;
+                                })();
+                            }
+                        };
+                        chrome.runtime.onMessage.addListener(onResponse);
+                    });
+                }, 10000); // 10,000 ms = 10 seconds
+            }
+        });
     });
-});
+}
 
 // Only keep these ONCE at the end of your file:
-}
 
 // Normalize LinkedIn post URLs to a canonical form for comparison
 function normalizePostUrl(urlStr) {
@@ -409,6 +452,7 @@ async function getNextPendingRecordNonDuplicate(limit = 100) {
     const params = new URLSearchParams();
     if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
     params.set('pageSize', String(Math.max(1, Math.min(100, limit))));
+    // Updated filter to use the actual field name from Airtable
     params.set('filterByFormula', 'NOT({Comment Done})');
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
     const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
@@ -440,7 +484,7 @@ async function getNextPendingRecord() {
     const params = new URLSearchParams();
     if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
     params.set('pageSize', '1');
-    // Optional filter to only fetch records not marked as done
+    // Updated filter to use the actual field name from Airtable
     params.set('filterByFormula', 'NOT({Comment Done})');
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
     const response = await fetch(url, {
@@ -461,14 +505,19 @@ async function getNextPendingRecord() {
 async function markRecordDone(recordId, tabId) {
     const { AIRTABLE_API_KEY } = CONFIG || {};
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`;
-    // Attempt 1: Done + By + On (timestamp). This covers all requested fields.
-    const attemptFields1 = { "Comment Done": true, "Comment By": COMMENT_BY, "Comment on": new Date().toISOString() };
-    // Attempt 2: Done + By (if 'Comment on' field doesn't exist or type mismatch)
-    const attemptFields2 = { "Comment Done": true, "Comment By": COMMENT_BY };
-    // Attempt 3: Done only (if 'Comment By' option missing in single select)
-    const attemptFields3 = { "Comment Done": true };
-
-    async function tryPatch(fields) {
+    
+    console.log(`[markRecordDone] Updating record ${recordId} at ${url}`);
+    
+    // Try to update with all fields first
+    const fields = { 
+        "Comment Done": true, 
+        "Comment By": COMMENT_BY,
+        "Comment On": new Date().toISOString() 
+    };
+    
+    try {
+        console.log(`[markRecordDone] Attempting update with fields:`, fields);
+        
         const res = await fetch(url, {
             method: 'PATCH',
             headers: {
@@ -477,33 +526,62 @@ async function markRecordDone(recordId, tabId) {
             },
             body: JSON.stringify({ fields })
         });
-        return res;
-    }
-
-    let res = await tryPatch(attemptFields1);
-    if (!res.ok) {
-        const text1 = await res.text().catch(() => '');
-        if (res.status === 422) {
-            console.warn('Airtable 422 on finalize (likely field mismatch). Retrying without "Comment on". Details:', text1);
-            res = await tryPatch(attemptFields2);
-            if (!res.ok) {
-                const text2 = await res.text().catch(() => '');
-                if (res.status === 422) {
-                    console.warn('Airtable 422 on finalize (Comment By option likely missing). Retrying without "Comment By". Details:', text2);
-                    res = await tryPatch(attemptFields3);
-                    if (!res.ok) {
-                        const text3 = await res.text().catch(() => '');
-                        throw new Error(`Airtable PATCH fallback (Done only) failed (${res.status}): ${text3}`);
-                    }
-                } else {
-                    throw new Error(`Airtable PATCH (Done+By) failed (${res.status}): ${text2}`);
+        
+        if (!res.ok) {
+            const errorText = await res.text().catch(() => 'Unknown error');
+            console.warn(`[markRecordDone] Airtable PATCH failed (${res.status}): ${errorText}`);
+            
+            // Try with just Comment Done and Comment On (Comment By might not exist yet)
+            const fallbackFields = { 
+                "Comment Done": true,
+                "Comment On": new Date().toISOString()
+            };
+            console.log(`[markRecordDone] Retrying with fallback fields:`, fallbackFields);
+            
+            const res2 = await fetch(url, {
+                method: 'PATCH',
+                headers: {
+                    Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ fields: fallbackFields })
+            });
+            
+            if (!res2.ok) {
+                const errorText2 = await res2.text().catch(() => 'Unknown error');
+                console.warn(`[markRecordDone] Fallback PATCH failed (${res2.status}): ${errorText2}`);
+                
+                // Final attempt with just Comment Done
+                const essentialFields = { "Comment Done": true };
+                console.log(`[markRecordDone] Final attempt with essential fields:`, essentialFields);
+                
+                const res3 = await fetch(url, {
+                    method: 'PATCH',
+                    headers: {
+                        Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ fields: essentialFields })
+                });
+                
+                if (!res3.ok) {
+                    const errorText3 = await res3.text().catch(() => 'Unknown error');
+                    throw new Error(`Airtable PATCH failed even with essential fields (${res3.status}): ${errorText3}`);
                 }
+                
+                console.log(`[markRecordDone] Successfully updated with essential fields only`);
+            } else {
+                console.log(`[markRecordDone] Successfully updated with fallback fields`);
             }
         } else {
-            throw new Error(`Airtable PATCH (Done+By+On) failed (${res.status}): ${text1}`);
+            console.log(`[markRecordDone] Successfully updated with all fields`);
         }
+        
+        console.log(`Successfully marked record ${recordId} as done in Airtable`);
+    } catch (error) {
+        console.error('[markRecordDone] Error marking record as done:', error);
+        throw error;
     }
-    // Tab close is now handled by the caller after PATCH completes
 }
     // Handle the alarm tick to resume work even if the service worker was suspended
     chrome.alarms.onAlarm.addListener((alarm) => {

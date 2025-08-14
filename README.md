@@ -1,58 +1,138 @@
-# LinkedIn Airtable Commenter
+# LinkedIn Comment Automation Extension
 
-This Chrome extension automates the process of commenting on LinkedIn posts using data fetched from Airtable. It allows users to efficiently manage their commenting tasks without manual intervention once started.
+This Chrome extension automatically comments on LinkedIn posts using data from Airtable. It fetches pending comment records, opens LinkedIn tabs, posts comments in a human-like manner, and updates Airtable with completion status.
 
 ## Features
 
-- Fetches LinkedIn post URLs and comment texts from Airtable.
-- Automatically comments on LinkedIn posts.
-- Marks records in Airtable as "Comment Done" after successful posting.
-- Configurable to run only when the user clicks the "Start" button.
+- **Automated Commenting**: Opens LinkedIn posts and places comments automatically
+- **Human-like Behavior**: Includes realistic scrolling, typing delays, and natural movements
+- **Airtable Integration**: Fetches records from Airtable and updates completion status
+- **Duplicate Prevention**: Avoids commenting on the same post multiple times
+- **Queue Management**: Processes records with configurable delays (7-10 minutes)
+- **Progress Tracking**: Shows processed, successful, and failed comment counts
 
-## Project Structure
+## Setup
 
-```
-linkedin-airtable-commenter
-├── src
-│   ├── background.js        # Main logic for background processing
-│   ├── content.js           # DOM manipulation for LinkedIn posts
-│   ├── helpers
-│   │   ├── airtable.js      # Airtable helper functions
-│   │   └── linkedin.js      # LinkedIn helper functions
-│   ├── popup.html           # HTML for the extension's popup
-│   └── popup.js             # Popup functionality control
-├── manifest.json            # Chrome extension configuration
-└── README.md                # Project documentation
-```
+1. **Load the Extension**:
+   - Open Chrome and go to `chrome://extensions/`
+   - Enable "Developer mode"
+   - Click "Load unpacked" and select this folder
 
-## Setup Instructions
+2. **Configure Airtable**:
+   - The extension uses a fixed Airtable configuration
+   - Base ID: `appD9VxZrOhiQY9VB`
+   - Table ID: `tblyhMPmCt87ORo3t`
+   - Main View: `viwiRzf62qaMKGQoG` (for pending comments)
+   - Today's View: `viwhyoCkHret6DqWe` (for comment form)
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd linkedin-airtable-commenter
-   ```
-
-2. **Load the extension in Chrome:**
-   - Open Chrome and navigate to `chrome://extensions/`.
-   - Enable "Developer mode" in the top right corner.
-   - Click on "Load unpacked" and select the `linkedin-airtable-commenter` directory.
-
-3. **Airtable setup is preconfigured:**
-   - API key, Base, Table, and View IDs are hardcoded per your setup.
+3. **Required Airtable Fields**:
+   - `Post URL`: LinkedIn post URL to comment on
+   - `Generated Comment`: The comment text to post
+   - `Comment Done`: Boolean field to mark completion
+   - `Comment By`: Text field for commenter name
+   - `Comment On`: Date field for comment timestamp
 
 ## Usage
 
-1. Click on the extension icon in the Chrome toolbar.
-2. Press the "Start" button to begin the commenting process.
-3. The extension will automatically fetch records from Airtable and comment on the specified LinkedIn posts.
+1. **Start Automation**:
+   - Click the extension icon
+   - Click "Start" to begin processing
+   - The extension will fetch today's comment count and reset counters
 
-## Notes
+2. **Monitor Progress**:
+   - View real-time statistics (processed, successes, failures)
+   - See countdown timer for next comment
+   - Track today's comment count
 
-- Ensure you're logged in to LinkedIn in the same Chrome profile where the extension is installed.
-- Records are filtered using `NOT({Comment Done})`; adjust your Airtable fields accordingly.
-- A random delay of 7 to 10 minutes is introduced between comments.
+3. **Stop Automation**:
+   - Click "Stop" to halt processing
+   - All counters will reset to 0
 
-## Contributing
+## How It Works
 
-Feel free to submit issues or pull requests for any improvements or bug fixes.
+1. **Record Fetching**: Gets next pending record from Airtable
+2. **Tab Opening**: Opens LinkedIn post in new tab
+3. **Human Simulation**: Scrolls, waits, and types naturally
+4. **Comment Posting**: Submits comment and waits 5 seconds
+5. **Airtable Update**: Marks record as done with metadata
+6. **Tab Closing**: Closes tab after 5-second dwell time
+7. **Next Record**: Waits 7-10 minutes before processing next record
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Airtable Not Updating**:
+   - Check browser console for error messages
+   - Verify field names match exactly (case-sensitive)
+   - Run `tests/airtable_test.js` to test connection
+
+2. **Tabs Not Closing**:
+   - Check if LinkedIn page is fully loaded
+   - Verify content script injection
+   - Check console for tab close errors
+
+3. **Duplicate Comments**:
+   - Ensure duplicate view is properly configured
+   - Check if records are being marked as done
+   - Verify URL normalization is working
+
+### Debug Mode
+
+- Open Chrome DevTools
+- Go to Console tab
+- Look for messages starting with `[background]`, `[content]`, `[finalize]`
+- Check for any error messages or warnings
+
+### Testing Airtable Connection
+
+Run the test script to verify connectivity:
+
+```bash
+node tests/airtable_test.js
+```
+
+This will test:
+- API key validity
+- Base and table access
+- Field update permissions
+
+## File Structure
+
+```
+linkedin-extension/
+├── manifest.json          # Extension configuration
+├── src/
+│   ├── background.js      # Service worker (main logic)
+│   ├── content.js         # LinkedIn page automation
+│   ├── popup.html         # Extension popup UI
+│   └── popup.js           # Popup functionality
+├── tests/
+│   └── airtable_test.js   # Airtable connection test
+└── README.md              # This file
+```
+
+## Permissions
+
+- `tabs`: To open and manage LinkedIn tabs
+- `scripting`: To inject content scripts
+- `storage`: To persist extension state
+- `alarms`: To schedule comment processing
+- `https://www.linkedin.com/*`: To access LinkedIn
+- `https://api.airtable.com/*`: To access Airtable API
+
+## Safety Features
+
+- **Rate Limiting**: 7-10 minute delays between comments
+- **Human Simulation**: Realistic delays and movements
+- **Error Handling**: Graceful fallbacks for failures
+- **Duplicate Prevention**: Avoids commenting on same post
+- **Tab Management**: Automatic cleanup of opened tabs
+
+## Support
+
+For issues or questions:
+1. Check the browser console for error messages
+2. Verify Airtable configuration and field names
+3. Test Airtable connection using the test script
+4. Ensure LinkedIn page structure hasn't changed

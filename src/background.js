@@ -31,6 +31,8 @@ let startedAt = null;
 let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
 let todayCount = 0;
 let lastCountAt = 0;
+let lastPostUrl = null;
+let forceStop = false; // Global stop flag
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // refresh every ~2 minutes
 let isProcessingTick = false; // prevent overlapping runs
 const ACTIVE_TASK_TTL_MS = 6 * 60 * 1000; // 6 minutes safety window
@@ -67,24 +69,53 @@ async function clearActiveTask() {
 }
 
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','lastPostUrl','forceStop'], (items) => {
+    // Auto-fix corrupted timer if detected
+    if (items.nextFireTime && typeof items.nextFireTime === 'number' && isFinite(items.nextFireTime)) {
+        const now = Date.now();
+        const timeDiff = items.nextFireTime - now;
+        if (timeDiff > 24 * 60 * 60 * 1000) { // More than 24 hours in future
+            console.error('[boot] CRITICAL: Detected corrupted timer:', new Date(items.nextFireTime), 'resetting automatically');
+            items.nextFireTime = now + 2000; // Reset to 2 seconds from now
+            chrome.storage.local.set({ nextFireTime: items.nextFireTime });
+        }
+    }
     isRunning = !!items.isRunning;
     nextFireTime = items.nextFireTime || null;
     runStats = items.runStats || runStats;
     startedAt = items.startedAt || null;
     todayCount = typeof items.todayCount === 'number' ? items.todayCount : 0;
     lastCountAt = typeof items.lastCountAt === 'number' ? items.lastCountAt : 0;
-    if (isRunning) {
-        if (nextFireTime && Date.now() < nextFireTime) {
-            const delayMs = Math.max(0, nextFireTime - Date.now());
-            chrome.alarms.create('autoCommentTick', { when: Date.now() + delayMs });
+    lastPostUrl = items.lastPostUrl || null;
+    forceStop = !!items.forceStop;
+    if (isRunning && !forceStop) {
+        // Validate nextFireTime to prevent corrupted values
+        if (nextFireTime && typeof nextFireTime === 'number' && isFinite(nextFireTime)) {
+            const now = Date.now();
+            const timeDiff = nextFireTime - now;
+            
+            // Check if the time is reasonable (not more than 24 hours in the future)
+            if (timeDiff > 0 && timeDiff < 24 * 60 * 60 * 1000) {
+                console.log('[boot] Restoring timer with valid nextFireTime:', new Date(nextFireTime), 'delayMs:', timeDiff);
+                chrome.alarms.create('autoCommentTick', { when: nextFireTime });
+            } else {
+                console.warn('[boot] nextFireTime is corrupted or too far in future:', new Date(nextFireTime), 'resetting to soon');
+                nextFireTime = now + 1000;
+                chrome.storage.local.set({ nextFireTime });
+                chrome.alarms.create('autoCommentTick', { when: nextFireTime });
+            }
         } else {
-            // nextFireTime missing or in the past; trigger soon
+            // nextFireTime missing or invalid; trigger soon
+            console.log('[boot] nextFireTime missing or invalid, triggering soon');
             const soon = 1000;
             nextFireTime = Date.now() + soon;
             chrome.storage.local.set({ nextFireTime });
-            chrome.alarms.create('autoCommentTick', { when: Date.now() + soon });
+            chrome.alarms.create('autoCommentTick', { when: nextFireTime });
         }
+    } else if (forceStop) {
+        console.log('[boot] Service was force stopped, not restoring alarms');
+        isRunning = false;
+        chrome.storage.local.set({ isRunning: false });
     }
 });
 
@@ -128,8 +159,12 @@ function refreshTodayCountIfStale() {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "start") {
-        if (isRunning) return;
+        if (isRunning || forceStop) {
+            console.log('[start] Cannot start - service is already running or force stopped');
+            return;
+        }
         loadConfig().then(() => {
+            forceStop = false; // Clear force stop flag
             isRunning = true;
             // Reset session stats on Start
             runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
@@ -137,31 +172,73 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
             startedAt = Date.now();
-            chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+            chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats, forceStop: false });
             refreshTodayCountIfStale();
             scheduleNext(nextDelay);
         });
     } 
     else if (request.action === "stop") {
+        console.log('[stop] Stopping auto-commenting service');
+        forceStop = true; // Set global stop flag
         isRunning = false;
         nextFireTime = null;
         startedAt = null;
-        chrome.alarms.clear('autoCommentTick');
+        isProcessingTick = false; // Force stop any ongoing processing
+        
+        // Clear ALL alarms (not just autoCommentTick)
+        try {
+            chrome.alarms.clearAll(() => {
+                if (chrome.runtime.lastError) {
+                    console.warn('[stop] Error clearing all alarms:', chrome.runtime.lastError.message);
+                } else {
+                    console.log('[stop] Successfully cleared all alarms');
+                }
+            });
+        } catch (e) {
+            console.warn('[stop] Failed to clear alarms:', e);
+        }
+        
+        // Force close any active tabs and clear active task
+        (async () => {
+            try {
+                const active = await getActiveTask();
+                if (active && active.tabId) {
+                    console.log('[stop] Closing active tab:', active.tabId);
+                    chrome.tabs.remove(active.tabId, () => void chrome.runtime.lastError);
+                }
+                await clearActiveTask();
+            } catch (e) {
+                console.warn('[stop] Error clearing active task:', e);
+            }
+        })();
+        
         // Reset stats on Stop as requested
         runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
-        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats, forceStop: true });
+        
+        console.log('[stop] Service stopped successfully');
     }
     else if (request.action === "getStatus") {
         refreshTodayCountIfStale();
-        sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount });
+        sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl });
         // No need to return true, since sendResponse is synchronous here
     }
+
     else if (request.action === "getTodayNow") {
         // Respond after fetching to provide an immediate, accurate value
         fetchTodayCount()
             .then((cnt) => sendResponse({ todayCount: cnt }))
             .catch(() => sendResponse({ todayCount }));
         return true; // keep the message channel open for async response
+    }
+    else if (request.action === "forceResetTimer") {
+        console.log('[forceResetTimer] Manually resetting timer');
+        nextFireTime = Date.now() + 2000; // Reset to 2 seconds from now
+        chrome.storage.local.set({ nextFireTime });
+        chrome.alarms.clearAll(() => {
+            chrome.alarms.create('autoCommentTick', { when: nextFireTime });
+        });
+        sendResponse({ success: true, nextFireTime });
     }
 });
 
@@ -181,10 +258,25 @@ try {
 } catch (_) { /* not available in some contexts */ }
 
 function scheduleNext(delayMs) {
-    if (!isRunning) return;
+    if (!isRunning || forceStop) {
+        console.log('[scheduleNext] Not scheduling - service is stopped or force stopped');
+        return;
+    }
     const safeDelay = (typeof delayMs === 'number' && isFinite(delayMs) && delayMs >= 0) ? delayMs : 2000;
     const when = Date.now() + safeDelay;
     nextFireTime = when;
+    console.log('[scheduleNext] Setting nextFireTime to:', new Date(when), 'delayMs:', delayMs, 'safeDelay:', safeDelay);
+    
+    // Validate the calculated time
+    if (when > Date.now() + 24 * 60 * 60 * 1000) { // More than 24 hours in the future
+        console.error('[scheduleNext] ERROR: Calculated time is too far in the future:', new Date(when), 'delayMs:', delayMs, 'safeDelay:', safeDelay);
+        // Reset to a safe value
+        nextFireTime = Date.now() + 2000;
+        chrome.storage.local.set({ nextFireTime });
+        console.log('[scheduleNext] Reset to safe value:', new Date(nextFireTime));
+        return;
+    }
+    
     try {
         chrome.alarms.clear('autoCommentTick', () => {
             if (chrome.runtime.lastError) {/* ignore */}
@@ -192,16 +284,20 @@ function scheduleNext(delayMs) {
                 console.warn('[alarms] API not available in this context');
                 return;
             }
-            chrome.alarms.create('autoCommentTick', { when });
+            chrome.alarms.create('autoCommentTick', { when: when });
         });
     } catch (e) {
         console.error('Failed to schedule alarm', e);
     }
     chrome.storage.local.set({ nextFireTime });
+    console.log('[scheduleNext] Saved nextFireTime to storage:', nextFireTime);
 }
 
 async function processRecords() {
-    if (!isRunning) return;
+    if (!isRunning || forceStop) {
+        console.log('[processRecords] Service is stopped or force stopped, not processing');
+        return;
+    }
     if (isProcessingTick) {
         console.log('[tick] already processing; skipping');
         return;
@@ -251,7 +347,7 @@ async function processRecords() {
         runStats.lastRun = Date.now();
         runStats.lastError = null;
         if (isRunning) {
-            nextDelay = getRandomDelay(); // Random delay between 7 and 10 minutes
+            nextDelay = getRandomDelay(); // Random delay between 5 and 7 minutes
             nextFireTime = Date.now() + nextDelay;
             chrome.storage.local.set({ runStats, nextFireTime });
             scheduleNext(nextDelay);
@@ -293,12 +389,74 @@ async function processRecords() {
         return;
     }
 
-    console.log(`Opening LinkedIn post: ${postUrl}`);
+    console.log(`Processing LinkedIn post: ${postUrl}`);
 
     // Persist the active task immediately to avoid duplicate opens on SW restart
     await setActiveTask({ recordId: record.id, postUrl, startedAt: Date.now() });
 
-    chrome.tabs.create({ url: postUrl, active: true }, async (tab) => {
+    // First, try to post comment without opening a tab (background approach)
+    console.log('[background] Attempting background comment posting for:', postUrl);
+    
+    // Try background approach first - inject content script into existing LinkedIn tab if available
+    try {
+        const existingTabs = await chrome.tabs.query({ url: "*://*.linkedin.com/*" });
+        if (existingTabs.length > 0) {
+            console.log('[background] Found existing LinkedIn tab, attempting background comment');
+            const existingTab = existingTabs[0];
+            
+            // Try to inject content script into existing tab
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId: existingTab.id },
+                    files: ['src/content.js']
+                });
+                
+                // Send message to existing tab
+                chrome.tabs.sendMessage(existingTab.id, { action: "postComment", commentText });
+                
+                // Set up response listener
+                const onResponse = function(message, senderInfo) {
+                    if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === existingTab.id) {
+                        console.log('[background] Background comment posted successfully for record:', record.id);
+                        chrome.runtime.onMessage.removeListener(onResponse);
+                        handleCommentSuccess(record, postUrl);
+                    }
+                };
+                chrome.runtime.onMessage.addListener(onResponse);
+                
+                // Set timeout for background approach
+                setTimeout(async () => {
+                    try {
+                        const active = await getActiveTask();
+                        if (active && active.recordId === record.id) {
+                            console.log('[background] Background approach timed out, falling back to tab creation');
+                            // Fall back to tab creation
+                            createTabForComment(postUrl, record, commentText);
+                        }
+                    } catch (e) {
+                        console.error('[background] Error in background timeout:', e);
+                        createTabForComment(postUrl, record, commentText);
+                    }
+                }, 30000); // 30 second timeout for background approach
+                
+                return; // Exit early if background approach is attempted
+            } catch (e) {
+                console.log('[background] Failed to inject into existing tab, falling back to tab creation:', e);
+            }
+        }
+    } catch (e) {
+        console.log('[background] Error checking existing tabs, falling back to tab creation:', e);
+    }
+    
+        // Fall back to tab creation if background approach fails
+    createTabForComment(postUrl, record, commentText);
+}
+
+// Helper function to create tab for comment posting
+function createTabForComment(postUrl, record, commentText) {
+    console.log('[background] Creating tab for comment posting');
+    
+    chrome.tabs.create({ url: postUrl, active: false }, async (tab) => {
         // Update active task with tabId
         try {
             const active = await getActiveTask();
@@ -312,85 +470,126 @@ async function processRecords() {
             if (tabId === tab.id && changeInfo.status === 'complete') {
                 chrome.tabs.onUpdated.removeListener(listener);
 
-                // Add a 10-second delay before injecting the content script
-                setTimeout(() => {
+                // Add a 5-second delay before injecting the content script
+                setTimeout(async () => {
+                    // Give the tab minimal attention - brief activation then background
+                    try {
+                        // Brief activation to ensure LinkedIn loads properly
+                        await chrome.tabs.update(tab.id, { active: true });
+                        console.log('[background] Tab briefly activated for LinkedIn initialization');
+                        
+                        // Wait 3 seconds for LinkedIn to initialize
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        
+                        // Return to background
+                        await chrome.tabs.update(tab.id, { 
+                            active: false,  // Return to background
+                            highlighted: false,  // Don't highlight
+                            pinned: false  // Ensure not pinned
+                        });
+                        
+                        console.log('[background] Tab returned to background for silent operation');
+                    } catch (e) {
+                        console.warn('[background] Error preparing tab:', e);
+                    }
+                    
                     chrome.scripting.executeScript({
                         target: { tabId: tab.id },
                         files: ['src/content.js']
                     }, () => {
+                        console.log('[background] Content script injected, sending postComment message');
                         chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText });
 
                         const onResponse = function(message, senderInfo) {
                             if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
                                 console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
                                 chrome.runtime.onMessage.removeListener(onResponse);
-                                
-                                // Start Airtable update immediately
-                                const finalizePromise = (async () => {
-                                    try {
-                                        console.log('[finalize] Immediately updating Airtable for record:', record.id);
-                                        await markRecordDone(record.id, null); // Do not close tab in markRecordDone
-                                        console.log('[finalize] Marked record as done in Airtable:', record.id);
-                                        runStats.processed += 1;
-                                        runStats.successes += 1;
-                                        runStats.lastRun = Date.now();
-                                        runStats.lastError = null;
-                                        // Optimistically bump today counter
-                                        todayCount += 1;
-                                        lastCountAt = Date.now();
-                                        chrome.storage.local.set({ todayCount, lastCountAt });
-                                        // Clear active task on success
-                                        await clearActiveTask();
-                                    } catch (err) {
-                                        console.error('[finalize] Error in markRecordDone:', err);
-                                        runStats.failures += 1;
-                                        runStats.lastRun = Date.now();
-                                        runStats.lastError = String(err && err.message ? err.message : err);
-                                        chrome.storage.local.set({ runStats });
+                                handleCommentSuccess(record, postUrl);
+                            }
+                        };
+                        chrome.runtime.onMessage.addListener(onResponse);
+                        
+                        // Add a timeout to handle cases where comment posting fails
+                        setTimeout(async () => {
+                            try {
+                                const active = await getActiveTask();
+                                if (active && active.recordId === record.id) {
+                                    console.warn('[timeout] Comment posting timed out for record:', record.id);
+                                    // Mark as failed and move on
+                                    runStats.failures += 1;
+                                    runStats.lastRun = Date.now();
+                                    runStats.lastError = 'Comment posting timed out';
+                                    chrome.storage.local.set({ runStats });
+                                    
+                                    // Close the tab
+                                    const tabExists = await tabsGet(tab.id);
+                                    if (tabExists) {
+                                        chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
                                     }
-                                })();
-                                
-                                // In parallel, wait 5s then close the tab
-                                (async () => {
-                                    await new Promise(res => setTimeout(res, 5000));
-                                    try {
-                                        console.log(`[finalize] Attempting to close tab ${tab.id}`);
-                                        const tabExists = await tabsGet(tab.id);
-                                        if (tabExists) {
-                                            chrome.tabs.remove(tab.id, () => {
-                                                if (chrome.runtime.lastError) {
-                                                    console.warn('[finalize] Tab close error:', chrome.runtime.lastError.message);
-                                                } else {
-                                                    console.log('[finalize] Successfully closed tab:', tab.id);
-                                                }
-                                            });
-                                        } else {
-                                            console.log('[finalize] Tab already closed or not found:', tab.id);
-                                        }
-                                    } catch (e) {
-                                        console.warn('[finalize] Failed to close tab:', tab.id, e);
-                                    }
-                                })();
-                                
-                                // After both, schedule next
-                                (async () => {
-                                    await finalizePromise;
+                                    
+                                    // Clear active task and schedule next
+                                    await clearActiveTask();
                                     if (isRunning) {
                                         nextDelay = getRandomDelay();
                                         nextFireTime = Date.now() + nextDelay;
                                         chrome.storage.local.set({ nextFireTime, runStats });
                                         scheduleNext(nextDelay);
+                                        console.log('[timeout] Scheduled next run in', nextDelay, 'ms');
                                     }
                                     isProcessingTick = false;
-                                })();
+                                } else {
+                                    console.log('[timeout] Active task not found or different record, skipping timeout handling');
+                                }
+                            } catch (e) {
+                                console.error('[timeout] Error handling timeout:', e);
                             }
-                        };
-                        chrome.runtime.onMessage.addListener(onResponse);
+                        }, 90000); // 90 second timeout for tab approach
                     });
-                }, 10000); // 10,000 ms = 10 seconds
+                }, 5000); // 5,000 ms = 5 seconds
             }
         });
     });
+}
+
+// Helper function to handle successful comment posting
+async function handleCommentSuccess(record, postUrl) {
+    try {
+        console.log('[finalize] Immediately updating Airtable for record:', record.id);
+        await markRecordDone(record.id, null);
+        console.log('[finalize] Marked record as done in Airtable:', record.id);
+        runStats.processed += 1;
+        runStats.successes += 1;
+        runStats.lastRun = Date.now();
+        runStats.lastError = null;
+        
+        // Track the last successful post URL
+        lastPostUrl = postUrl;
+        todayCount += 1;
+        lastCountAt = Date.now();
+        chrome.storage.local.set({ todayCount, lastCountAt, lastPostUrl });
+        
+        // Clear active task on success
+        await clearActiveTask();
+        
+        // Schedule next
+        if (isRunning) {
+            nextDelay = getRandomDelay();
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ nextFireTime, runStats });
+            scheduleNext(nextDelay);
+        }
+        isProcessingTick = false;
+        
+        // Note: Tab closing is handled by the individual tab creation functions
+        // since they have access to the tab ID
+    } catch (err) {
+        console.error('[finalize] Error in markRecordDone:', err);
+        runStats.failures += 1;
+        runStats.lastRun = Date.now();
+        runStats.lastError = String(err && err.message ? err.message : err);
+        chrome.storage.local.set({ runStats });
+        isProcessingTick = false;
+    }
 }
 
 // Only keep these ONCE at the end of your file:
@@ -583,21 +782,54 @@ async function markRecordDone(recordId, tabId) {
         throw error;
     }
 }
+    // Periodic timer validation to prevent corruption
+    setInterval(() => {
+        if (nextFireTime && typeof nextFireTime === 'number' && isFinite(nextFireTime)) {
+            const now = Date.now();
+            const timeDiff = nextFireTime - now;
+            if (timeDiff > 24 * 60 * 60 * 1000) { // More than 24 hours in future
+                console.error('[validation] CRITICAL: Runtime corrupted timer detected:', new Date(nextFireTime), 'resetting automatically');
+                nextFireTime = now + 2000; // Reset to 2 seconds from now
+                chrome.storage.local.set({ nextFireTime });
+                chrome.alarms.clearAll(() => {
+                    chrome.alarms.create('autoCommentTick', { when: nextFireTime });
+                });
+            }
+        }
+        
+        // Debug: Log current timer state every 30 seconds
+        console.log('[validation] Current timer state:', {
+            nextFireTime: nextFireTime ? new Date(nextFireTime) : null,
+            now: new Date(now),
+            timeDiff: nextFireTime ? nextFireTime - now : null,
+            isRunning,
+            forceStop
+        });
+    }, 30000); // Check every 30 seconds
+
     // Handle the alarm tick to resume work even if the service worker was suspended
     chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm && alarm.name === 'autoCommentTick') {
-            if (!isRunning) return;
+            if (!isRunning || forceStop) {
+                console.log('[alarm] Ignoring alarm - service is stopped or force stopped');
+                return;
+            }
             processRecords().catch(err => {
                 console.error('processRecords error', err);
-                runStats.failures += 1;
-                runStats.lastRun = Date.now();
-                runStats.lastError = String(err && err.message ? err.message : err);
-                chrome.storage.local.set({ runStats });
-                // schedule a retry with a fresh delay to avoid tight loop
-                nextDelay = getRandomDelay();
-                nextFireTime = Date.now() + nextDelay;
-                chrome.storage.local.set({ nextFireTime });
-                scheduleNext(nextDelay);
+                // Only schedule next if still running and not force stopped
+                if (isRunning && !forceStop) {
+                    runStats.failures += 1;
+                    runStats.lastRun = Date.now();
+                    runStats.lastError = String(err && err.message ? err.message : err);
+                    chrome.storage.local.set({ runStats });
+                    // schedule a retry with a fresh delay to avoid tight loop
+                    nextDelay = getRandomDelay();
+                    nextFireTime = Date.now() + nextDelay;
+                    chrome.storage.local.set({ nextFireTime });
+                    scheduleNext(nextDelay);
+                } else {
+                    console.log('[alarm] Not scheduling next - service was stopped or force stopped');
+                }
             });
         }
     });

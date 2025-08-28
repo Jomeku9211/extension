@@ -48,6 +48,17 @@
             .btn-start:hover { filter: brightness(1.05); }
             .btn-stop { background: linear-gradient(135deg, #ef4444, #f59e0b); color: #111827; }
             .btn-stop:hover { filter: brightness(1.05); }
+            .btn-last-post { background: linear-gradient(135deg, #8b5cf6, #06b6d4); color: white; }
+            .btn-last-post:hover { filter: brightness(1.05); }
+            .btn-last-post:disabled { 
+                background: linear-gradient(135deg, #6b7280, #9ca3af); 
+                color: #d1d5db; 
+                cursor: not-allowed; 
+                opacity: 0.6; 
+            }
+            .btn-warning { background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; }
+            .btn-warning:hover { filter: brightness(1.05); }
+
             .hidden { display: none; }
         </style>
 </head>
@@ -84,6 +95,14 @@
 
                 <button id="start-button" class="btn-start">Start</button>
                 <button id="stop-button" class="btn-stop hidden">Stop</button>
+                
+                <button id="last-post-button" class="btn-last-post">
+                    <span id="last-post-text">Last Post</span>
+                </button>
+                <button id="force-reset-timer" class="btn btn-warning">
+                    Force Reset Timer
+                </button>
+
             </div>
     
 

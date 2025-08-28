@@ -7,7 +7,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const successesEl = document.getElementById('stat-successes');
     const failuresEl = document.getElementById('stat-failures');
     const todayEl = document.getElementById('stat-today');
-        const startedAtEl = document.getElementById('stat-startedAt');
+    const startedAtEl = document.getElementById('stat-startedAt');
+    const lastPostButton = document.getElementById('last-post-button');
+    const lastPostText = document.getElementById('last-post-text');
+    const forceResetTimerButton = document.getElementById('force-reset-timer');
+
 
     let countdownId = null;
     let lastPollAt = 0;
@@ -26,18 +30,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateTimerUI(nextFireTime) {
+        console.log('[updateTimerUI] nextFireTime:', nextFireTime, 'type:', typeof nextFireTime);
         lastNextFireTime = nextFireTime || null;
         if (!nextFireTime) {
             timerDiv.textContent = 'Next: --:--';
+            console.log('[updateTimerUI] No nextFireTime, showing --:--');
             return;
         }
         const msLeft = nextFireTime - Date.now();
-        const min = Math.max(0, Math.floor(msLeft / 60000));
-        const sec = Math.max(0, Math.floor((msLeft % 60000) / 1000));
-        timerDiv.textContent = `Next: ${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+        
+        // Handle negative values (past due)
+        if (msLeft <= 0) {
+            timerDiv.textContent = 'Next: Due now';
+            console.log('[updateTimerUI] Timer is past due, msLeft:', msLeft);
+            return;
+        }
+        
+        const min = Math.floor(msLeft / 60000);
+        const sec = Math.floor((msLeft % 60000) / 1000);
+        const displayText = `Next: ${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+        timerDiv.textContent = displayText;
+        console.log('[updateTimerUI] Updated timer:', displayText, 'msLeft:', msLeft);
     }
 
-            function updateStatsUI(runStats, startedAt, todayCount) {
+            function updateStatsUI(runStats, startedAt, todayCount, lastPostUrl) {
         const rs = runStats || {};
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
@@ -45,6 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (typeof todayCount === 'number') todayEl.textContent = todayCount;
                 lastStartedAt = startedAt || null;
                 renderStartedAt();
+                updateLastPostButton(lastPostUrl);
     }
 
             function formatHHmmAmPm(date) {
@@ -81,8 +98,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 startedAtEl.textContent = `${label} (${ago})`;
             }
 
+            function updateLastPostButton(lastPostUrl) {
+                console.log('[updateLastPostButton] lastPostUrl:', lastPostUrl);
+                if (lastPostUrl) {
+                    lastPostButton.style.display = 'block';
+                    lastPostText.textContent = 'View Last Post';
+                    lastPostButton.onclick = () => {
+                        chrome.tabs.create({ url: lastPostUrl, active: false });
+                    };
+                    lastPostButton.disabled = false;
+                    console.log('[updateLastPostButton] Button enabled with URL:', lastPostUrl);
+                } else {
+                    lastPostButton.style.display = 'block';
+                    lastPostText.textContent = 'No Posts Yet';
+                    lastPostButton.onclick = null;
+                    lastPostButton.disabled = true;
+                    console.log('[updateLastPostButton] Button disabled - no URL');
+                }
+            }
+
     function pollStatus() {
         chrome.runtime.sendMessage({ action: 'getStatus' }, (resp) => {
+            console.log('[pollStatus] Response:', resp);
+            console.log('[pollStatus] nextFireTime from response:', resp?.nextFireTime, 'type:', typeof resp?.nextFireTime);
             if (!resp) {
                 updateStatusUI(false);
                 updateTimerUI(null);
@@ -91,17 +129,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             updateStatusUI(resp.isRunning);
             updateTimerUI(resp.nextFireTime);
-            updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount);
+            updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount, resp.lastPostUrl);
         });
     }
 
     startButton.addEventListener('click', () => {
         chrome.runtime.sendMessage({ action: 'start' });
         pollStatus();
-        if (!countdownId) countdownId = setInterval(() => {
-            if (lastNextFireTime) updateTimerUI(lastNextFireTime);
-            // Also occasionally poll to refresh stats
-        }, 1000);
         // Disable Start quickly to avoid double clicks
         startButton.disabled = true;
         
@@ -129,8 +163,26 @@ document.addEventListener('DOMContentLoaded', () => {
         startButton.disabled = false;
     });
 
+    forceResetTimerButton.addEventListener('click', () => {
+        console.log('[popup] Force reset timer button clicked');
+        chrome.runtime.sendMessage({ action: 'forceResetTimer' }, (response) => {
+            if (response && response.success) {
+                console.log('[popup] Timer reset successfully');
+                // Refresh the status to show the new timer
+                pollStatus();
+            } else {
+                console.error('[popup] Failed to reset timer');
+            }
+        });
+    });
+
+
+
         // Options removed – API key and IDs are fixed in code.
 
+    // Initialize last post button as hidden
+    updateLastPostButton(null);
+    
     // Initial poll and ticking
     pollStatus();
     // Kick an immediate today count fetch for freshness
@@ -140,7 +192,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     countdownId = setInterval(() => {
-        if (lastNextFireTime) updateTimerUI(lastNextFireTime);
+        // Update timer every second if we have a nextFireTime
+        if (lastNextFireTime) {
+            updateTimerUI(lastNextFireTime);
+        }
         renderStartedAt();
         // Periodically refresh full status so async todayCount fetch reflects in UI
         const now = Date.now();

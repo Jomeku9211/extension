@@ -416,10 +416,32 @@ async function processRecords() {
                 
                 // Set up response listener
                 const onResponse = function(message, senderInfo) {
-                    if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === existingTab.id) {
-                        console.log('[background] Background comment posted successfully for record:', record.id);
+                    if (!senderInfo.tab || senderInfo.tab.id !== existingTab.id) return;
+                    if (message.action === "commentResult") {
                         chrome.runtime.onMessage.removeListener(onResponse);
-                        handleCommentSuccess(record, postUrl);
+                        if (message.success) {
+                            console.log('[background] Background comment success (existing tab) for record:', record.id);
+                            (async () => {
+                                await handleCommentSuccess(record, postUrl);
+                                // Do NOT close the user's existing tab
+                            })();
+                        } else {
+                            console.warn('[background] Background comment failed (existing tab). Reason:', message.reason);
+                            (async () => {
+                                runStats.failures += 1;
+                                runStats.lastRun = Date.now();
+                                runStats.lastError = message.reason || 'comment_failed';
+                                chrome.storage.local.set({ runStats });
+                                await clearActiveTask();
+                                if (isRunning) {
+                                    nextDelay = getRandomDelay();
+                                    nextFireTime = Date.now() + nextDelay;
+                                    chrome.storage.local.set({ nextFireTime, runStats });
+                                    scheduleNext(nextDelay);
+                                }
+                                isProcessingTick = false;
+                            })();
+                        }
                     }
                 };
                 chrome.runtime.onMessage.addListener(onResponse);
@@ -501,10 +523,41 @@ function createTabForComment(postUrl, record, commentText) {
                         chrome.tabs.sendMessage(tab.id, { action: "postComment", commentText });
 
                         const onResponse = function(message, senderInfo) {
-                            if (message.action === "commentPosted" && senderInfo.tab && senderInfo.tab.id === tab.id) {
-                                console.log('[background] Received commentPosted for tab', tab.id, 'record', record.id);
+                            if (!senderInfo.tab || senderInfo.tab.id !== tab.id) return;
+                            if (message.action === "commentResult") {
                                 chrome.runtime.onMessage.removeListener(onResponse);
-                                handleCommentSuccess(record, postUrl);
+                                if (message.success) {
+                                    console.log('[background] Comment success for tab', tab.id, 'record', record.id);
+                                    (async () => {
+                                        await handleCommentSuccess(record, postUrl);
+                                        // Close the tab on success
+                                        try {
+                                            const tabExists = await tabsGet(tab.id);
+                                            if (tabExists) chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
+                                        } catch {}
+                                    })();
+                                } else {
+                                    console.warn('[background] Comment failed for tab', tab.id, 'reason:', message.reason);
+                                    // Failure path: close tab and schedule next
+                                    (async () => {
+                                        runStats.failures += 1;
+                                        runStats.lastRun = Date.now();
+                                        runStats.lastError = message.reason || 'comment_failed';
+                                        chrome.storage.local.set({ runStats });
+                                        try {
+                                            const tabExists = await tabsGet(tab.id);
+                                            if (tabExists) chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError);
+                                        } catch {}
+                                        await clearActiveTask();
+                                        if (isRunning) {
+                                            nextDelay = getRandomDelay();
+                                            nextFireTime = Date.now() + nextDelay;
+                                            chrome.storage.local.set({ nextFireTime, runStats });
+                                            scheduleNext(nextDelay);
+                                        }
+                                        isProcessingTick = false;
+                                    })();
+                                }
                             }
                         };
                         chrome.runtime.onMessage.addListener(onResponse);

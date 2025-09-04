@@ -208,34 +208,26 @@ if (window.linkedinCommenterLoaded) {
             commentPosted = true;
             postButton.click();
             
-            // Wait 3 seconds before notifying background to close tab
+            // Wait 3 seconds before notifying background
             await sleep(3000);
             console.log('[content] Sending commentPosted message for', location.href);
             
-            // Send message multiple times to ensure delivery
-            chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
+            // Send success result
+            chrome.runtime.sendMessage({ action: 'commentResult', success: true, postUrl: location.href });
             
             // Fallback: resend after 2s if not acknowledged
             setTimeout(() => {
-                console.log('[content] Fallback: resending commentPosted for', location.href);
-                chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
+                console.log('[content] Fallback: resending success result for', location.href);
+                chrome.runtime.sendMessage({ action: 'commentResult', success: true, postUrl: location.href });
             }, 2000);
             
             return;
         }
 
-        // If no button found, still notify after delay to allow background to proceed
+        // If no button found, report failure
         if (!commentPosted) {
-            console.log('[content] No post button found, marking as posted anyway');
-            commentPosted = true;
-            await sleep(3000);
-            console.log('[content] Sending commentPosted message for', location.href);
-            chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
-            
-            setTimeout(() => {
-                console.log('[content] Fallback: resending commentPosted for', location.href);
-                chrome.runtime.sendMessage({ action: 'commentPosted', postUrl: location.href });
-            }, 2000);
+            console.warn('[content] No post button found, reporting failure');
+            chrome.runtime.sendMessage({ action: 'commentResult', success: false, reason: 'post_button_not_found', postUrl: location.href });
         }
     }
 }

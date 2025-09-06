@@ -774,8 +774,19 @@ async function getNextPendingRecordNonDuplicate(limit = 100) {
     // Updated filter to use the actual field name from Airtable
     params.set('filterByFormula', 'NOT({Comment Done})');
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
-    const data = await response.json();
+    let data = null;
+    try {
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+        if (!response.ok) {
+            const errText = await response.text().catch(() => 'Unknown error');
+            console.warn('[airtable] Pending records fetch not ok:', response.status, errText);
+            return null;
+        }
+        data = await response.json();
+    } catch (e) {
+        console.warn('[airtable] Failed to fetch pending records:', e);
+        return null;
+    }
     if (!data || !Array.isArray(data.records) || data.records.length === 0) return null;
 
     let firstNonDuplicate = null;

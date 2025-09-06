@@ -151,8 +151,8 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','tod
 });
 
 function getRandomDelay() {
-    // Random delay between 5 and 7 minutes (per acceptance criteria)
-    return (5 + Math.random() * 2) * 60 * 1000;
+    // Random delay between 3 and 5 minutes
+    return (3 + Math.random() * 2) * 60 * 1000;
 }
 
 async function loadConfig() { return CONFIG; }

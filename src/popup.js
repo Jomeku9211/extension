@@ -11,6 +11,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const lastPostButton = document.getElementById('last-post-button');
     const lastPostText = document.getElementById('last-post-text');
     const forceResetTimerButton = document.getElementById('force-reset-timer');
+    const activityBadge = document.getElementById('activity');
+    const attemptBadge = document.getElementById('attempt');
 
 
     let countdownId = null;
@@ -125,11 +127,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateStatusUI(false);
                 updateTimerUI(null);
                 updateStatsUI(null);
+                if (activityBadge) activityBadge.textContent = 'Idle';
+                if (attemptBadge) attemptBadge.textContent = 'Attempt: 0';
                 return;
             }
             updateStatusUI(resp.isRunning);
             updateTimerUI(resp.nextFireTime);
             updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount, resp.lastPostUrl);
+            // Activity and attempts
+            if (activityBadge) activityBadge.textContent = resp.isProcessingTick ? 'Working…' : 'Idle';
+            if (attemptBadge) attemptBadge.textContent = `Attempt: ${resp.currentAttempt || 0}`;
         });
     }
 

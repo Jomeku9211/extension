@@ -192,7 +192,10 @@ if (window.linkedinCommenterLoaded) {
             '.comments-comment-box__submit-button--cr',
             '.comments-comment-box__submit-button',
             'button[type="submit"]',
-            '.artdeco-button--primary'
+            '.artdeco-button--primary',
+            '.comments-comment-box__form button',
+            'button[aria-label*="post" i]',
+            'button[aria-label*="comment" i]'
         ];
         
         let postButton = null;
@@ -224,9 +227,25 @@ if (window.linkedinCommenterLoaded) {
             return;
         }
 
-        // If no button found, report failure
+        // If no button found, try Enter key fallback
         if (!commentPosted) {
-            console.warn('[content] No post button found, reporting failure');
+            console.warn('[content] No post button found, trying Enter key fallback');
+            try {
+                const press = (type) => editor.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+                press('keydown');
+                press('keypress');
+                press('keyup');
+                await sleep(1500);
+            } catch {}
+            // Check if comment posted (heuristic: editor cleared or presence of new comment element nearby)
+            const editorCleared = editor && (editor.textContent || '').trim().length === 0;
+            if (editorCleared && !commentPosted) {
+                commentPosted = true;
+                chrome.runtime.sendMessage({ action: 'commentResult', success: true, postUrl: location.href });
+                setTimeout(() => chrome.runtime.sendMessage({ action: 'commentResult', success: true, postUrl: location.href }), 2000);
+                return;
+            }
+            console.warn('[content] Enter key fallback did not confirm posting, reporting failure');
             chrome.runtime.sendMessage({ action: 'commentResult', success: false, reason: 'post_button_not_found', postUrl: location.href });
         }
     }

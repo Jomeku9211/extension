@@ -36,6 +36,8 @@ let forceStop = false; // Global stop flag
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // refresh every ~2 minutes
 let isProcessingTick = false; // prevent overlapping runs
 const ACTIVE_TASK_TTL_MS = 6 * 60 * 1000; // 6 minutes safety window
+const MAX_ATTEMPTS_PER_RECORD = 3; // auto-skip a record after this many attempts
+let recordAttempts = {}; // recordId -> number of attempts
 
 function getFromStorage(keys) {
     return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
@@ -66,6 +68,35 @@ async function setActiveTask(task) {
 }
 async function clearActiveTask() {
     await removeFromStorage(['activeTask']);
+}
+
+async function loadRecordAttempts() {
+    try {
+        const { recordAttempts: stored } = await getFromStorage(['recordAttempts']);
+        recordAttempts = stored && typeof stored === 'object' ? stored : {};
+    } catch (_) {
+        recordAttempts = {};
+    }
+}
+
+async function saveRecordAttempts() {
+    try { await setInStorage({ recordAttempts }); } catch (_) {}
+}
+
+function getAttemptCount(recordId) {
+    if (!recordId) return 0;
+    const n = recordAttempts[recordId];
+    return typeof n === 'number' && isFinite(n) ? n : 0;
+}
+
+function setAttemptCount(recordId, count) {
+    if (!recordId) return;
+    recordAttempts[recordId] = Math.max(0, count | 0);
+}
+
+function clearAttemptCount(recordId) {
+    if (!recordId) return;
+    delete recordAttempts[recordId];
 }
 
 // Restore state on boot
@@ -220,7 +251,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     else if (request.action === "getStatus") {
         refreshTodayCountIfStale();
-        sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl });
+        // Include active task and current attempt count (if any) for UI transparency
+        (async () => {
+            try {
+                await loadRecordAttempts();
+                const activeTask = await getActiveTask();
+                const currentAttempt = activeTask ? getAttemptCount(activeTask.recordId) : 0;
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, activeTask, isProcessingTick, currentAttempt });
+            } catch (_) {
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, activeTask: null, isProcessingTick, currentAttempt: 0 });
+            }
+        })();
+        return true; // async sendResponse
         // No need to return true, since sendResponse is synchronous here
     }
 
@@ -390,6 +432,31 @@ async function processRecords() {
     }
 
     console.log(`Processing LinkedIn post: ${postUrl}`);
+
+    // Track attempts for this record and auto-skip after too many failures
+    await loadRecordAttempts();
+    const attempts = getAttemptCount(record.id) + 1;
+    setAttemptCount(record.id, attempts);
+    await saveRecordAttempts();
+    console.log(`[attempts] Record ${record.id} attempt #${attempts}`);
+    if (attempts > MAX_ATTEMPTS_PER_RECORD) {
+        console.warn(`[attempts] Exceeded max attempts for ${record.id}. Marking as done and skipping.`);
+        try {
+            await markRecordDone(record.id, null);
+        } catch (e) {
+            console.warn('Failed to mark as done after max attempts', e);
+        }
+        clearAttemptCount(record.id);
+        await saveRecordAttempts();
+        if (isRunning) {
+            nextDelay = getRandomDelay();
+            nextFireTime = Date.now() + nextDelay;
+            chrome.storage.local.set({ nextFireTime });
+            scheduleNext(nextDelay);
+        }
+        isProcessingTick = false;
+        return;
+    }
 
     // Persist the active task immediately to avoid duplicate opens on SW restart
     await setActiveTask({ recordId: record.id, postUrl, startedAt: Date.now() });
@@ -837,8 +904,8 @@ async function markRecordDone(recordId, tabId) {
 }
     // Periodic timer validation to prevent corruption
     setInterval(() => {
+        const now = Date.now();
         if (nextFireTime && typeof nextFireTime === 'number' && isFinite(nextFireTime)) {
-            const now = Date.now();
             const timeDiff = nextFireTime - now;
             if (timeDiff > 24 * 60 * 60 * 1000) { // More than 24 hours in future
                 console.error('[validation] CRITICAL: Runtime corrupted timer detected:', new Date(nextFireTime), 'resetting automatically');

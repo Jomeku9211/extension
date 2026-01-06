@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoderFarm Comment</title>
+        <style>
+            :root {
+                --bg: #0f172a;          /* slate-900 */
+                --panel: #111827;       /* gray-900 */
+                --text: #e5e7eb;        /* gray-200 */
+                --muted: #9ca3af;       /* gray-400 */
+                --green: #22c55e;       /* green-500 */
+                --red: #ef4444;         /* red-500 */
+                --accent: #3b82f6;      /* blue-500 */
+                --accent-2: #a78bfa;    /* violet-400 */
+            }
+            html, body { margin: 0; padding: 0; }
+            body {
+                font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
+                width: 240px;
+                padding: 12px;
+                color: var(--text);
+                background: linear-gradient(135deg, #0b1020, #141a33 60%, #0b1020);
+            }
+            .title { font-weight: 800; font-size: 14px; letter-spacing: 0.3px; margin-bottom: 8px; color: #eaeff9; text-transform: uppercase; }
+            .title .accent { color: var(--accent); }
+            .card {
+                background: var(--panel);
+                border: 1px solid #1f2937; /* gray-800 */
+                border-radius: 10px;
+                padding: 12px;
+                box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            }
+            .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+            .muted { color: var(--muted); }
+            .badge { font-size: 11px; padding: 2px 8px; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.08); }
+            .status-active { background: rgba(34,197,94,0.15); color: var(--green); }
+            .status-inactive { background: rgba(239,68,68,0.15); color: var(--red); }
+            .timer { font-weight: 600; color: var(--accent); }
+            .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 8px; }
+            .stat { background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06); }
+            .stat .label { font-size: 11px; color: var(--muted); display: block; }
+            .stat .value { font-weight: 700; margin-top: 2px; }
+
+            button { width: 100%; padding: 10px; margin-top: 8px; border-radius: 8px; border: 1px solid transparent; font-weight: 600; cursor: pointer; }
+            .btn-start { background: linear-gradient(135deg, #2563eb, #22d3ee); color: white; }
+            .btn-start:hover { filter: brightness(1.05); }
+            .btn-stop { background: linear-gradient(135deg, #ef4444, #f59e0b); color: #111827; }
+            .btn-stop:hover { filter: brightness(1.05); }
+            .btn-last-post { background: linear-gradient(135deg, #8b5cf6, #06b6d4); color: white; }
+            .btn-last-post:hover { filter: brightness(1.05); }
+            .btn-last-post:disabled { 
+                background: linear-gradient(135deg, #6b7280, #9ca3af); 
+                color: #d1d5db; 
+                cursor: not-allowed; 
+                opacity: 0.6; 
+            }
+            .btn-warning { background: linear-gradient(135deg, #f59e0b, #ef4444); color: white; }
+            .btn-warning:hover { filter: brightness(1.05); }
+
+            .hidden { display: none; }
+        </style>
+</head>
+<body>
+            <div class="title">CoderFarm <span class="accent">Commenting Tool</span></div>
+            <div class="card">
+                <div class="row">
+                    <div id="status" class="badge status-inactive">Inactive</div>
+                    <div id="timer" class="timer">Next: --:--</div>
+                </div>
+                <div class="row" style="margin-top:6px;">
+                    <div id="activity" class="badge" style="background: rgba(59,130,246,0.15); color: var(--accent);">Idle</div>
+                    <div id="attempt" class="badge" style="background: rgba(167,139,250,0.15); color: var(--accent-2);">Attempt: 0</div>
+                </div>
+
+                        <div id="stats" class="stat-grid">
+                    <div class="stat">
+                        <span class="label">Processed</span>
+                        <span id="stat-processed" class="value">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="label">Successes</span>
+                        <span id="stat-successes" class="value" style="color: var(--green)">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="label">Failures</span>
+                        <span id="stat-failures" class="value" style="color: var(--red)">0</span>
+                    </div>
+                    <div class="stat">
+                        <span class="label">Today</span>
+                        <span id="stat-today" class="value">0</span>
+                    </div>
+                            <div class="stat" style="grid-column: span 2;">
+                                <span class="label">Started at</span>
+                                <span id="stat-startedAt" class="value muted">--</span>
+                            </div>
+                </div>
+
+                <button id="start-button" class="btn-start">Start</button>
+                <button id="stop-button" class="btn-stop hidden">Stop</button>
+                
+                <button id="last-post-button" class="btn-last-post">
+                    <span id="last-post-text">Last Post</span>
+                </button>
+                <button id="force-reset-timer" class="btn btn-warning">
+                    Force Reset Timer
+                </button>
+
+            </div>
+    
+
+        <script src="popup.js"></script>
+
+</body>
+</html>

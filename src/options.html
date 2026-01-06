@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Extension Options</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+    label { display: block; margin-top: 12px; font-weight: 600; }
+    input { width: 100%; padding: 8px; margin-top: 6px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    button { margin-top: 16px; padding: 10px 16px; }
+    .msg { margin-top: 12px; }
+  </style>
+  <script defer src="options.js"></script>
+  <script defer>
+    // Prevent leaking tokens if page is left open
+    window.addEventListener('beforeunload', () => {
+      document.querySelectorAll('input').forEach(i => i.type === 'password' ? i.value = '' : null);
+    });
+  </script>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src https://api.airtable.com">
+</head>
+<body>
+  <h1>LinkedIn Airtable Commenter – Options</h1>
+  <p>Enter your Airtable details. These are stored locally in your browser.</p>
+
+  <label for="apiKey">Airtable API Key</label>
+  <input id="apiKey" type="password" placeholder="pat..." autocomplete="off" />
+
+  <button id="saveBtn">Save</button>
+  <span id="msg" class="msg"></span>
+
+  <h2>Test connection</h2>
+  <button id="testBtn">Test Fetch 1 record</button>
+  <pre id="testOut" style="white-space: pre-wrap; background: #f6f8fa; padding: 12px; border-radius: 6px;"></pre>
+</body>
+</html>

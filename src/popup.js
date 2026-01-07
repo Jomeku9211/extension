@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const stopButton = document.getElementById('stop-button');
     const statusDiv = document.getElementById('status');
     const timerDiv = document.getElementById('timer');
+    const totalProspectsEl = document.getElementById('stat-total-prospects');
     const processedEl = document.getElementById('stat-processed');
     const successesEl = document.getElementById('stat-successes');
     const failuresEl = document.getElementById('stat-failures');
@@ -55,8 +56,9 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('[updateTimerUI] Updated timer:', displayText, 'msLeft:', msLeft);
     }
 
-            function updateStatsUI(runStats, startedAt, todayCount, lastPostUrl) {
+            function updateStatsUI(runStats, startedAt, todayCount, lastPostUrl, totalProspects) {
         const rs = runStats || {};
+        if (typeof totalProspects === 'number') totalProspectsEl.textContent = totalProspects;
         processedEl.textContent = rs.processed || 0;
         successesEl.textContent = rs.successes || 0;
         failuresEl.textContent = rs.failures || 0;
@@ -134,7 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             updateStatusUI(resp.isRunning);
             updateTimerUI(resp.nextFireTime);
-            updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount, resp.lastPostUrl);
+            updateStatsUI(resp.runStats, resp.startedAt, resp.todayCount, resp.lastPostUrl, resp.totalProspects);
             // Activity and attempts
             if (activityBadge) activityBadge.textContent = resp.isProcessingTick ? 'Working…' : 'Idle';
             if (attemptBadge) attemptBadge.textContent = `Attempt: ${resp.currentAttempt || 0}`;
@@ -201,6 +203,12 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.runtime.sendMessage({ action: 'getTodayNow' }, (resp) => {
         if (resp && typeof resp.todayCount === 'number') {
             todayEl.textContent = resp.todayCount;
+        }
+    });
+    // Fetch total prospects count
+    chrome.runtime.sendMessage({ action: 'getTotalProspectsNow' }, (resp) => {
+        if (resp && typeof resp.totalProspects === 'number') {
+            totalProspectsEl.textContent = resp.totalProspects;
         }
     });
     countdownId = setInterval(() => {

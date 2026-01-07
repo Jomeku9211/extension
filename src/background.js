@@ -35,6 +35,8 @@ let runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastErr
 let todayCount = 0;
 let lastCountAt = 0;
 let lastPostUrl = null;
+let totalProspectsCount = 0;
+let lastTotalProspectsAt = 0;
 let forceStop = false; // Global stop flag
 const TODAY_COUNT_TTL_MS = 2 * 60 * 1000; // refresh every ~2 minutes
 let isProcessingTick = false; // prevent overlapping runs
@@ -103,7 +105,7 @@ function clearAttemptCount(recordId) {
 }
 
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','lastPostUrl','forceStop'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','lastPostUrl','totalProspectsCount','lastTotalProspectsAt','forceStop'], (items) => {
     // Auto-fix corrupted timer if detected
     if (items.nextFireTime && typeof items.nextFireTime === 'number' && isFinite(items.nextFireTime)) {
         const now = Date.now();
@@ -121,6 +123,8 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','tod
     todayCount = typeof items.todayCount === 'number' ? items.todayCount : 0;
     lastCountAt = typeof items.lastCountAt === 'number' ? items.lastCountAt : 0;
     lastPostUrl = items.lastPostUrl || null;
+    totalProspectsCount = typeof items.totalProspectsCount === 'number' ? items.totalProspectsCount : 0;
+    lastTotalProspectsAt = typeof items.lastTotalProspectsAt === 'number' ? items.lastTotalProspectsAt : 0;
     forceStop = !!items.forceStop;
     if (isRunning && !forceStop) {
         // Validate nextFireTime to prevent corrupted values
@@ -185,9 +189,39 @@ async function fetchTodayCount() {
     }
 }
 
+async function fetchTotalProspectsCount() {
+    try {
+        let count = 0;
+        let offset = undefined;
+        do {
+            const params = new URLSearchParams();
+            params.set('view', AIRTABLE_VIEW_ID); // Use the main view
+            params.set('pageSize', '100');
+            if (offset) params.set('offset', offset);
+            const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+            const data = await res.json();
+            if (data && Array.isArray(data.records)) count += data.records.length;
+            offset = data && data.offset;
+        } while (offset);
+        totalProspectsCount = count;
+        lastTotalProspectsAt = Date.now();
+        chrome.storage.local.set({ totalProspectsCount, lastTotalProspectsAt });
+        return count;
+    } catch (e) {
+        console.warn('Failed to fetch total prospects count', e);
+        return totalProspectsCount;
+    }
+}
+
 function refreshTodayCountIfStale() {
     if (!AIRTABLE_TODAY_VIEW_ID) return;
     if (Date.now() - lastCountAt > TODAY_COUNT_TTL_MS) fetchTodayCount();
+}
+
+function refreshTotalProspectsCountIfStale() {
+    if (!AIRTABLE_VIEW_ID) return;
+    if (Date.now() - lastTotalProspectsAt > TODAY_COUNT_TTL_MS) fetchTotalProspectsCount();
 }
 
 
@@ -267,15 +301,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     else if (request.action === "getStatus") {
         refreshTodayCountIfStale();
+        refreshTotalProspectsCountIfStale();
         // Include active task and current attempt count (if any) for UI transparency
         (async () => {
             try {
                 await loadRecordAttempts();
                 const activeTask = await getActiveTask();
                 const currentAttempt = activeTask ? getAttemptCount(activeTask.recordId) : 0;
-                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, activeTask, isProcessingTick, currentAttempt });
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, totalProspects: totalProspectsCount, activeTask, isProcessingTick, currentAttempt });
             } catch (_) {
-                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, activeTask: null, isProcessingTick, currentAttempt: 0 });
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, totalProspects: totalProspectsCount, activeTask: null, isProcessingTick, currentAttempt: 0 });
             }
         })();
         return true; // async sendResponse
@@ -287,6 +322,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         fetchTodayCount()
             .then((cnt) => sendResponse({ todayCount: cnt }))
             .catch(() => sendResponse({ todayCount }));
+        return true; // keep the message channel open for async response
+    }
+    else if (request.action === "getTotalProspectsNow") {
+        // Respond after fetching to provide an immediate, accurate value
+        fetchTotalProspectsCount()
+            .then((cnt) => sendResponse({ totalProspects: cnt }))
+            .catch(() => sendResponse({ totalProspects: totalProspectsCount }));
         return true; // keep the message channel open for async response
     }
     else if (request.action === "forceResetTimer") {

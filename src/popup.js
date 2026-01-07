@@ -125,6 +125,9 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('[pollStatus] Sending getStatus message');
         chrome.runtime.sendMessage({ action: 'getStatus' }, (resp) => {
             console.log('[pollStatus] Response:', resp);
+            if (resp && typeof resp.totalProspects === 'number') {
+                console.log('[pollStatus] Updating total prospects from pollStatus:', resp.totalProspects);
+            }
             console.log('[pollStatus] nextFireTime from response:', resp?.nextFireTime, 'type:', typeof resp?.nextFireTime);
             if (!resp) {
                 updateStatusUI(false);
@@ -206,9 +209,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     // Fetch total prospects count
+    console.log('[popup] Fetching total prospects count...');
     chrome.runtime.sendMessage({ action: 'getTotalProspectsNow' }, (resp) => {
+        console.log('[popup] Total prospects response:', resp);
         if (resp && typeof resp.totalProspects === 'number') {
             totalProspectsEl.textContent = resp.totalProspects;
+            console.log('[popup] Updated total prospects display to:', resp.totalProspects);
+        } else {
+            console.warn('[popup] Invalid total prospects response:', resp);
         }
     });
     countdownId = setInterval(() => {

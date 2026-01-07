@@ -190,6 +190,7 @@ async function fetchTodayCount() {
 }
 
 async function fetchTotalProspectsCount() {
+    console.log('[fetchTotalProspectsCount] Starting fetch from view:', AIRTABLE_VIEW_ID);
     try {
         let count = 0;
         let offset = undefined;
@@ -199,17 +200,22 @@ async function fetchTotalProspectsCount() {
             params.set('pageSize', '100');
             if (offset) params.set('offset', offset);
             const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+            console.log('[fetchTotalProspectsCount] Fetching URL:', url.replace(AIRTABLE_API_KEY, '***'));
             const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
             const data = await res.json();
-            if (data && Array.isArray(data.records)) count += data.records.length;
+            if (data && Array.isArray(data.records)) {
+                count += data.records.length;
+                console.log('[fetchTotalProspectsCount] Batch count:', data.records.length, 'total so far:', count);
+            }
             offset = data && data.offset;
         } while (offset);
+        console.log('[fetchTotalProspectsCount] Final count:', count);
         totalProspectsCount = count;
         lastTotalProspectsAt = Date.now();
         chrome.storage.local.set({ totalProspectsCount, lastTotalProspectsAt });
         return count;
     } catch (e) {
-        console.warn('Failed to fetch total prospects count', e);
+        console.warn('[fetchTotalProspectsCount] Failed to fetch total prospects count:', e);
         return totalProspectsCount;
     }
 }
@@ -325,10 +331,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // keep the message channel open for async response
     }
     else if (request.action === "getTotalProspectsNow") {
-        // Respond after fetching to provide an immediate, accurate value
+        // Always fetch fresh data for immediate accuracy
         fetchTotalProspectsCount()
             .then((cnt) => sendResponse({ totalProspects: cnt }))
-            .catch(() => sendResponse({ totalProspects: totalProspectsCount }));
+            .catch((err) => {
+                console.error('[getTotalProspectsNow] Error fetching count:', err);
+                sendResponse({ totalProspects: totalProspectsCount });
+            });
         return true; // keep the message channel open for async response
     }
     else if (request.action === "forceResetTimer") {

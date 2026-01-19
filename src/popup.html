@@ -60,57 +60,163 @@
             .btn-warning:hover { filter: brightness(1.05); }
 
             .hidden { display: none; }
+
+            /* Tab Styles */
+            .tab-container { margin-bottom: 12px; }
+            .tab-buttons {
+                display: flex;
+                background: var(--panel);
+                border-radius: 8px;
+                padding: 4px;
+                margin-bottom: 12px;
+                border: 1px solid rgba(255,255,255,0.08);
+            }
+            .tab-button {
+                flex: 1;
+                padding: 8px 12px;
+                border: none;
+                background: transparent;
+                color: var(--muted);
+                font-size: 12px;
+                font-weight: 600;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+            .tab-button.active {
+                background: var(--accent);
+                color: white;
+                box-shadow: 0 2px 8px rgba(59,130,246,0.3);
+            }
+            .tab-button:hover:not(.active) {
+                color: var(--text);
+                background: rgba(255,255,255,0.05);
+            }
+            .tab-content { display: none; }
+            .tab-content.active { display: block; }
         </style>
 </head>
 <body>
-            <div class="title">CoderFarm <span class="accent">Commenting Tool</span></div>
-            <div class="card">
-                <div class="row">
-                    <div id="status" class="badge status-inactive">Inactive</div>
-                    <div id="timer" class="timer">Next: --:--</div>
-                </div>
-                <div class="row" style="margin-top:6px;">
-                    <div id="activity" class="badge" style="background: rgba(59,130,246,0.15); color: var(--accent);">Idle</div>
-                    <div id="attempt" class="badge" style="background: rgba(167,139,250,0.15); color: var(--accent-2);">Attempt: 0</div>
-                </div>
+            <div class="title">CoderFarm <span class="accent">Extension</span></div>
 
-                        <div id="stats" class="stat-grid">
-                    <div class="stat">
-                        <span class="label">Total Prospects</span>
-                        <span id="stat-total-prospects" class="value" style="color: var(--accent)">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="label">Processed</span>
-                        <span id="stat-processed" class="value">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="label">Successes</span>
-                        <span id="stat-successes" class="value" style="color: var(--green)">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="label">Failures</span>
-                        <span id="stat-failures" class="value" style="color: var(--red)">0</span>
-                    </div>
-                    <div class="stat">
-                        <span class="label">Today</span>
-                        <span id="stat-today" class="value">0</span>
-                    </div>
-                            <div class="stat" style="grid-column: span 2;">
-                                <span class="label">Started at</span>
-                                <span id="stat-startedAt" class="value muted">--</span>
-                            </div>
+            <!-- Tab Navigation -->
+            <div class="tab-container">
+                <div class="tab-buttons">
+                    <button class="tab-button active" data-tab="commenting">Commenting</button>
+                    <button class="tab-button" data-tab="messaging">Messaging</button>
                 </div>
+            </div>
 
-                <button id="start-button" class="btn-start">Start</button>
-                <button id="stop-button" class="btn-stop hidden">Stop</button>
-                
-                <button id="last-post-button" class="btn-last-post">
-                    <span id="last-post-text">Last Post</span>
-                </button>
-                <button id="force-reset-timer" class="btn btn-warning">
-                    Force Reset Timer
-                </button>
+            <!-- Commenting Tab -->
+            <div id="commenting-tab" class="tab-content active">
+                <div class="card">
+                    <div class="row">
+                        <div id="status" class="badge status-inactive">Inactive</div>
+                        <div id="timer" class="timer">Next: --:--</div>
+                    </div>
+                    <div class="row" style="margin-top:6px;">
+                        <div id="activity" class="badge" style="background: rgba(59,130,246,0.15); color: var(--accent);">Idle</div>
+                        <div id="attempt" class="badge" style="background: rgba(167,139,250,0.15); color: var(--accent-2);">Attempt: 0</div>
+                    </div>
 
+                            <div id="stats" class="stat-grid">
+                        <div class="stat">
+                            <span class="label">Total Prospects</span>
+                            <span id="stat-total-prospects" class="value" style="color: var(--accent)">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Processed</span>
+                            <span id="stat-processed" class="value">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Successes</span>
+                            <span id="stat-successes" class="value" style="color: var(--green)">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Failures</span>
+                            <span id="stat-failures" class="value" style="color: var(--red)">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Today</span>
+                            <span id="stat-today" class="value">0</span>
+                        </div>
+                                <div class="stat" style="grid-column: span 2;">
+                                    <span class="label">Started at</span>
+                                    <span id="stat-startedAt" class="value muted">--</span>
+                                </div>
+                    </div>
+
+                    <!-- Comment Count Input -->
+                    <div style="margin: 12px 0;">
+                        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Number of Comments:</label>
+                        <input type="number" id="comment-count-input" min="1" max="100" value="10" style="width: 100%; padding: 8px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; background: rgba(255,255,255,0.05); color: var(--text); font-size: 14px;">
+                    </div>
+
+                    <button id="start-button" class="btn-start">Start Commenting</button>
+                    <button id="stop-button" class="btn-stop hidden">Stop</button>
+
+                    <button id="last-post-button" class="btn-last-post">
+                        <span id="last-post-text">Last Post</span>
+                    </button>
+                    <button id="force-reset-timer" class="btn btn-warning">
+                        Force Reset Timer
+                    </button>
+
+                </div>
+            </div>
+
+            <!-- Messaging Tab -->
+            <div id="messaging-tab" class="tab-content">
+                <div class="card">
+                    <div class="row">
+                        <div id="messaging-status" class="badge status-inactive">Inactive</div>
+                        <div id="messaging-timer" class="timer">Next: --:--</div>
+                    </div>
+                    <div class="row" style="margin-top:6px;">
+                        <div id="messaging-activity" class="badge" style="background: rgba(59,130,246,0.15); color: var(--accent);">Idle</div>
+                        <div id="messaging-attempt" class="badge" style="background: rgba(167,139,250,0.15); color: var(--accent-2);">Attempt: 0</div>
+                    </div>
+
+                    <!-- Message Count Input -->
+                    <div style="margin: 12px 0;">
+                        <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Number of Messages:</label>
+                        <input type="number" id="message-count-input" min="1" max="100" value="10" style="width: 100%; padding: 8px; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; background: rgba(255,255,255,0.05); color: var(--text); font-size: 14px;">
+                    </div>
+
+                    <div id="messaging-stats" class="stat-grid">
+                        <div class="stat">
+                            <span class="label">Total Prospects</span>
+                            <span id="messaging-stat-total-prospects" class="value" style="color: var(--accent)">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Processed</span>
+                            <span id="messaging-stat-processed" class="value">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Successes</span>
+                            <span id="messaging-stat-successes" class="value" style="color: var(--green)">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Failures</span>
+                            <span id="messaging-stat-failures" class="value" style="color: var(--red)">0</span>
+                        </div>
+                        <div class="stat">
+                            <span class="label">Today</span>
+                            <span id="messaging-stat-today" class="value">0</span>
+                        </div>
+                        <div class="stat" style="grid-column: span 2;">
+                            <span class="label">Started at</span>
+                            <span id="messaging-stat-startedAt" class="value muted">--</span>
+                        </div>
+                    </div>
+
+                    <button id="messaging-start-button" class="btn-start">Start Messaging</button>
+                    <button id="messaging-stop-button" class="btn-stop hidden">Stop Messaging</button>
+
+                    <button id="messaging-last-profile-button" class="btn-last-post">
+                        <span id="messaging-last-profile-text">Last Profile</span>
+                    </button>
+                </div>
             </div>
     
 

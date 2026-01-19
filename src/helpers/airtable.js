@@ -32,3 +32,42 @@ export async function markRecordDone(recordId, cfg) {
     });
     return response.ok;
 }
+
+// Messaging-specific Airtable functions
+const MESSAGING_FIXED_CFG = {
+    AIRTABLE_API_KEY: 'patFClficxpGIUnJF.be5a51a7e3fabe7337cd2cb13dc3f10234fc52d8a1f60e012eb68be7b2fcc982',
+    AIRTABLE_BASE_ID: 'appD9VxZrOhiQY9VB',
+    AIRTABLE_TABLE_ID: 'tblQmyqKc6mhjc1Yd',
+    AIRTABLE_VIEW_ID: 'viwOdRbCrNjyKwO8r'
+};
+
+export async function getNextPendingMessageRecord(cfg) {
+    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = cfg || MESSAGING_FIXED_CFG;
+    if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) return null;
+    const params = new URLSearchParams();
+    if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
+    params.set('pageSize', '1');
+    // Removed filter - just get any record from the view
+    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' } });
+    const data = await response.json();
+    return data && Array.isArray(data.records) && data.records.length > 0 ? data.records[0] : null;
+}
+
+export async function markMessageRecordDone(recordId, cfg) {
+    // Temporarily disabled - no Message Done field being used
+    console.log('[markMessageRecordDone] Skipping - no Message Done field');
+    return true;
+}
+
+export async function getTotalMessageProspectsCount(cfg) {
+    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID } = cfg || MESSAGING_FIXED_CFG;
+    if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !AIRTABLE_TABLE_ID) return 0;
+    const params = new URLSearchParams();
+    if (AIRTABLE_VIEW_ID) params.set('view', AIRTABLE_VIEW_ID);
+    // Removed filter - just count all records in the view
+    const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}?${params.toString()}`;
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' } });
+    const data = await response.json();
+    return data && data.records ? data.records.length : 0;
+}

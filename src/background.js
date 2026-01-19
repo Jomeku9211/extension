@@ -27,6 +27,11 @@ const AIRTABLE_TODAY_VIEW_ID = 'viwjzxpzCC24wtkfc';
 const AIRTABLE_DUPLICATE_VIEW_ID = 'viwhyoCkHret6DqWe';
 let CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID };
 
+// Messaging configuration
+const MESSAGING_AIRTABLE_TABLE_ID = 'tblQmyqKc6mhjc1Yd';
+const MESSAGING_AIRTABLE_VIEW_ID = 'viwOdRbCrNjyKwO8r';
+let MESSAGING_CONFIG = { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID: MESSAGING_AIRTABLE_TABLE_ID, AIRTABLE_VIEW_ID: MESSAGING_AIRTABLE_VIEW_ID };
+
 let isRunning = false;
 let nextDelay = null;
 let nextFireTime = null;
@@ -43,6 +48,27 @@ let isProcessingTick = false; // prevent overlapping runs
 const ACTIVE_TASK_TTL_MS = 6 * 60 * 1000; // 6 minutes safety window
 const MAX_ATTEMPTS_PER_RECORD = 3; // auto-skip a record after this many attempts
 let recordAttempts = {}; // recordId -> number of attempts
+
+// Messaging-specific variables
+let isMessagingRunning = false;
+let messagingNextDelay = null;
+let messagingNextFireTime = null;
+let messagingStartedAt = null;
+let messagingRunStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+let messagingTodayCount = 0;
+let messagingLastCountAt = 0;
+let messagingLastProfileUrl = null;
+let totalMessageProspectsCount = 0;
+let lastTotalMessageProspectsAt = 0;
+let messagingForceStop = false; // Messaging stop flag
+let isMessagingProcessingTick = false; // prevent overlapping messaging runs
+let messagingRecordAttempts = {}; // recordId -> number of attempts
+let messagingTargetCount = 0; // How many messages to send
+let messagingCurrentCount = 0; // How many sent so far
+
+// Commenting target count variables
+let commentingTargetCount = 0; // How many comments to make
+let commentingCurrentCount = 0; // How many made so far
 
 function getFromStorage(keys) {
     return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
@@ -75,6 +101,17 @@ async function clearActiveTask() {
     await removeFromStorage(['activeTask']);
 }
 
+async function getActiveMessagingTask() {
+    const { activeMessagingTask } = await getFromStorage(['activeMessagingTask']);
+    return activeMessagingTask || null;
+}
+async function setActiveMessagingTask(task) {
+    await setInStorage({ activeMessagingTask: task });
+}
+async function clearActiveMessagingTask() {
+    await removeFromStorage(['activeMessagingTask']);
+}
+
 async function loadRecordAttempts() {
     try {
         const { recordAttempts: stored } = await getFromStorage(['recordAttempts']);
@@ -104,8 +141,38 @@ function clearAttemptCount(recordId) {
     delete recordAttempts[recordId];
 }
 
+// Messaging record attempts management
+async function loadMessagingRecordAttempts() {
+    try {
+        const { messagingRecordAttempts: stored } = await getFromStorage(['messagingRecordAttempts']);
+        messagingRecordAttempts = stored && typeof stored === 'object' ? stored : {};
+    } catch (_) {
+        messagingRecordAttempts = {};
+    }
+}
+
+async function saveMessagingRecordAttempts() {
+    try { await setInStorage({ messagingRecordAttempts }); } catch (_) {}
+}
+
+function getMessagingAttemptCount(recordId) {
+    if (!recordId) return 0;
+    const n = messagingRecordAttempts[recordId];
+    return typeof n === 'number' && isFinite(n) ? n : 0;
+}
+
+function setMessagingAttemptCount(recordId, count) {
+    if (!recordId) return;
+    messagingRecordAttempts[recordId] = Math.max(0, count | 0);
+}
+
+function clearMessagingAttemptCount(recordId) {
+    if (!recordId) return;
+    delete messagingRecordAttempts[recordId];
+}
+
 // Restore state on boot
-chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','lastPostUrl','totalProspectsCount','lastTotalProspectsAt','forceStop'], (items) => {
+chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','todayCount','lastCountAt','lastPostUrl','totalProspectsCount','lastTotalProspectsAt','forceStop','isMessagingRunning','messagingNextFireTime','messagingRunStats','messagingStartedAt','messagingForceStop','messagingTargetCount','messagingCurrentCount'], (items) => {
     // Auto-fix corrupted timer if detected
     if (items.nextFireTime && typeof items.nextFireTime === 'number' && isFinite(items.nextFireTime)) {
         const now = Date.now();
@@ -126,6 +193,15 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','tod
     totalProspectsCount = typeof items.totalProspectsCount === 'number' ? items.totalProspectsCount : 0;
     lastTotalProspectsAt = typeof items.lastTotalProspectsAt === 'number' ? items.lastTotalProspectsAt : 0;
     forceStop = !!items.forceStop;
+
+    // Restore messaging state
+    isMessagingRunning = !!items.isMessagingRunning;
+    messagingNextFireTime = items.messagingNextFireTime || null;
+    messagingRunStats = items.messagingRunStats || messagingRunStats;
+    messagingStartedAt = items.messagingStartedAt || null;
+    messagingForceStop = !!items.messagingForceStop;
+    messagingTargetCount = typeof items.messagingTargetCount === 'number' ? items.messagingTargetCount : 0;
+    messagingCurrentCount = typeof items.messagingCurrentCount === 'number' ? items.messagingCurrentCount : 0;
     if (isRunning && !forceStop) {
         // Validate nextFireTime to prevent corrupted values
         if (nextFireTime && typeof nextFireTime === 'number' && isFinite(nextFireTime)) {
@@ -154,6 +230,52 @@ chrome.storage.local.get(['isRunning','nextFireTime','runStats','startedAt','tod
         console.log('[boot] Service was force stopped, not restoring alarms');
         isRunning = false;
         chrome.storage.local.set({ isRunning: false });
+    }
+
+    // Handle messaging timer restoration
+    if (isMessagingRunning && !messagingForceStop) {
+        console.log('[boot] Messaging service was running, checking messaging timer...');
+
+        // Auto-fix corrupted messaging timer if detected
+        if (messagingNextFireTime && typeof messagingNextFireTime === 'number' && isFinite(messagingNextFireTime)) {
+            const now = Date.now();
+            const timeDiff = messagingNextFireTime - now;
+            if (timeDiff > 24 * 60 * 60 * 1000) { // More than 24 hours in future
+                console.error('[boot] CRITICAL: Detected corrupted messaging timer:', new Date(messagingNextFireTime), 'resetting automatically');
+                messagingNextFireTime = now + 2000; // Reset to 2 seconds from now
+                chrome.storage.local.set({ messagingNextFireTime });
+            }
+        }
+
+        // Validate messagingNextFireTime to prevent corrupted values
+        if (messagingNextFireTime && typeof messagingNextFireTime === 'number' && isFinite(messagingNextFireTime)) {
+            const now = Date.now();
+            const timeDiff = messagingNextFireTime - now;
+
+            // Check if the time is reasonable (not more than 24 hours in the future)
+            if (timeDiff > 0 && timeDiff < 24 * 60 * 60 * 1000) {
+                console.log('[boot] Restoring messaging timer with valid messagingNextFireTime:', new Date(messagingNextFireTime), 'delayMs:', timeDiff);
+                chrome.alarms.create('autoMessagingTick', { when: messagingNextFireTime });
+            } else if (timeDiff <= 0) {
+                // Timer is in the past or now; trigger soon
+                console.log('[boot] Messaging timer is due or past, triggering soon');
+                const soon = 2000;
+                messagingNextFireTime = now + soon;
+                chrome.storage.local.set({ messagingNextFireTime });
+                chrome.alarms.create('autoMessagingTick', { when: messagingNextFireTime });
+            } else {
+                // nextFireTime missing or invalid; trigger soon
+                console.log('[boot] Messaging nextFireTime missing or invalid, triggering soon');
+                const soon = 2000;
+                messagingNextFireTime = now + soon;
+                chrome.storage.local.set({ messagingNextFireTime });
+                chrome.alarms.create('autoMessagingTick', { when: messagingNextFireTime });
+            }
+        } else if (messagingForceStop) {
+            console.log('[boot] Messaging service was force stopped, not restoring alarms');
+            isMessagingRunning = false;
+            chrome.storage.local.set({ isMessagingRunning: false });
+        }
     }
 });
 
@@ -230,11 +352,110 @@ function refreshTotalProspectsCountIfStale() {
     if (Date.now() - lastTotalProspectsAt > TODAY_COUNT_TTL_MS) fetchTotalProspectsCount();
 }
 
+// Messaging count functions
+async function fetchMessagingTodayCount() {
+    try {
+        console.log('[fetchMessagingTodayCount] Fetching today messaging count from view: viw7AoyHR9nJ8wNYD');
+
+        let count = 0;
+        let offset = undefined;
+
+        // Use the specific "today" view provided by user
+        const TODAY_VIEW_ID = 'viw7AoyHR9nJ8wNYD';
+
+        do {
+            const params = new URLSearchParams();
+            params.set('view', TODAY_VIEW_ID);
+            if (offset) params.set('offset', offset);
+
+            const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${MESSAGING_AIRTABLE_TABLE_ID}?${params.toString()}`;
+
+            console.log('[fetchMessagingTodayCount] Making API call to:', url.replace(AIRTABLE_API_KEY, '***'));
+
+            const response = await fetch(url, {
+                headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' }
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[fetchMessagingTodayCount] API error:', response.status, errorText);
+                return messagingTodayCount; // Return cached value on error
+            }
+
+            const data = await response.json();
+            console.log('[fetchMessagingTodayCount] API response received, records:', data.records ? data.records.length : 0);
+
+            if (data.records) {
+                count += data.records.length;
+                offset = data.offset;
+                console.log('[fetchMessagingTodayCount] Batch count:', data.records.length, 'total so far:', count);
+            } else {
+                console.error('[fetchMessagingTodayCount] No records in response');
+                break;
+            }
+
+        } while (offset);
+
+        console.log('[fetchMessagingTodayCount] Final today count:', count);
+        messagingTodayCount = count;
+        messagingLastCountAt = Date.now();
+        chrome.storage.local.set({ messagingTodayCount, messagingLastCountAt });
+        return count;
+    } catch (e) {
+        console.warn('[fetchMessagingTodayCount] Failed to fetch messaging today count:', e);
+        return messagingTodayCount;
+    }
+}
+
+async function fetchTotalMessageProspectsCount() {
+    try {
+        let count = 0;
+        let offset = undefined;
+        do {
+            const params = new URLSearchParams();
+            params.set('view', MESSAGING_AIRTABLE_VIEW_ID);
+            params.set('pageSize', '100');
+            if (offset) params.set('offset', offset);
+            const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${MESSAGING_AIRTABLE_TABLE_ID}?${params.toString()}`;
+
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
+            const data = await res.json();
+
+            if (data && Array.isArray(data.records)) {
+                count += data.records.length;
+            } else if (data.error) {
+                console.error('[fetchTotalMessageProspectsCount] API Error:', data.error);
+                break;
+            }
+
+            offset = data && data.offset;
+        } while (offset);
+
+        totalMessageProspectsCount = count;
+        lastTotalMessageProspectsAt = Date.now();
+        chrome.storage.local.set({ totalMessageProspectsCount, lastTotalMessageProspectsAt });
+        return count;
+    } catch (e) {
+        console.error('[fetchTotalMessageProspectsCount] Error:', e);
+        return totalMessageProspectsCount;
+    }
+}
+
+function refreshMessagingTodayCountIfStale() {
+    if (Date.now() - messagingLastCountAt > TODAY_COUNT_TTL_MS) fetchMessagingTodayCount();
+}
+
+function refreshTotalMessageProspectsCountIfStale() {
+    if (!MESSAGING_AIRTABLE_VIEW_ID) return;
+    if (Date.now() - lastTotalMessageProspectsAt > TODAY_COUNT_TTL_MS) fetchTotalMessageProspectsCount();
+}
+
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log('[background] Received message:', request.action);
+    console.log('[background] Received message:', request.action, 'from:', sender.url);
     if (request.action === "start") {
-        console.log('[start] Start button clicked, current state:', { isRunning, forceStop });
+        const commentCount = parseInt(request.commentCount) || 10;
+        console.log('[start] Start button clicked with count:', commentCount, 'current state:', { isRunning, forceStop });
         if (isRunning || forceStop) {
             console.log('[start] Cannot start - service is already running or force stopped');
             return;
@@ -243,14 +464,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             console.log('[start] Config loaded, starting service');
             forceStop = false; // Clear force stop flag
             isRunning = true;
+            // Set target and current count for commenting
+            commentingTargetCount = commentCount;
+            commentingCurrentCount = 0;
             // Reset session stats on Start
             runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
             // Run soon (2 seconds) for immediate feedback
             nextDelay = 2000;
             nextFireTime = Date.now() + nextDelay;
             startedAt = Date.now();
-            console.log('[start] Setting storage:', { isRunning, nextFireTime, startedAt, runStats, forceStop: false });
-            chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats, forceStop: false }, () => {
+            console.log('[start] Setting storage:', { isRunning, nextFireTime, startedAt, runStats, forceStop: false, commentingTargetCount, commentingCurrentCount });
+            chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats, forceStop: false, commentingTargetCount, commentingCurrentCount }, () => {
                 if (chrome.runtime.lastError) {
                     console.error('[start] Storage set error:', chrome.runtime.lastError);
                 } else {
@@ -301,7 +525,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
         // Reset stats on Stop as requested
         runStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
-        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats, forceStop: true });
+        // Reset commenting counts
+        commentingTargetCount = 0;
+        commentingCurrentCount = 0;
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats, forceStop: true, commentingTargetCount, commentingCurrentCount });
         
         console.log('[stop] Service stopped successfully');
     }
@@ -314,9 +541,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 await loadRecordAttempts();
                 const activeTask = await getActiveTask();
                 const currentAttempt = activeTask ? getAttemptCount(activeTask.recordId) : 0;
-                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, totalProspects: totalProspectsCount, activeTask, isProcessingTick, currentAttempt });
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, totalProspects: totalProspectsCount, activeTask, isProcessingTick, currentAttempt, commentingTargetCount, commentingCurrentCount });
             } catch (_) {
-                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, totalProspects: totalProspectsCount, activeTask: null, isProcessingTick, currentAttempt: 0 });
+                sendResponse({ isRunning, nextFireTime, runStats, startedAt, todayCount, lastPostUrl, totalProspects: totalProspectsCount, activeTask: null, isProcessingTick, currentAttempt: 0, commentingTargetCount, commentingCurrentCount });
             }
         })();
         return true; // async sendResponse
@@ -348,6 +575,203 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             chrome.alarms.create('autoCommentTick', { when: nextFireTime });
         });
         sendResponse({ success: true, nextFireTime });
+    }
+
+    // Messaging handlers
+    else if (request.action === "startMessaging") {
+        console.log('[startMessaging] Start button clicked, current state:', { isMessagingRunning, messagingForceStop });
+        console.log('[startMessaging] Current counts - target:', messagingTargetCount, 'current:', messagingCurrentCount);
+
+        // Force reset state if it's stuck from a previous run
+        if (messagingCurrentCount >= messagingTargetCount && messagingTargetCount > 0) {
+            console.log('[startMessaging] Previous run completed or stuck, resetting state');
+            isMessagingRunning = false;
+            messagingForceStop = false;
+            messagingCurrentCount = 0;
+            messagingTargetCount = 0;
+            chrome.storage.local.set({
+                isMessagingRunning: false,
+                messagingForceStop: false,
+                messagingCurrentCount: 0,
+                messagingTargetCount: 0
+            });
+        }
+
+        if (isMessagingRunning || messagingForceStop) {
+            console.log('[startMessaging] Cannot start - service already running or force stopped');
+            console.log('[startMessaging] isMessagingRunning:', isMessagingRunning, 'messagingForceStop:', messagingForceStop);
+            return;
+        }
+        messagingTargetCount = parseInt(request.messageCount) || 10;
+        messagingCurrentCount = 0;
+        console.log('[startMessaging] Config loaded, starting messaging service for', messagingTargetCount, 'messages');
+        messagingForceStop = false; // Clear force stop flag
+        isMessagingRunning = true;
+        // Reset session stats on Start
+        messagingRunStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+        // Run soon (2 seconds) for immediate feedback
+        messagingNextDelay = 2000;
+        messagingNextFireTime = Date.now() + messagingNextDelay;
+        messagingStartedAt = Date.now();
+        console.log('[startMessaging] Setting storage:', { isMessagingRunning, messagingNextFireTime, messagingStartedAt, messagingRunStats, messagingForceStop: false });
+        chrome.storage.local.set({ isMessagingRunning, messagingNextFireTime, messagingStartedAt, messagingRunStats, messagingForceStop: false, messagingTargetCount, messagingCurrentCount }, () => {
+            if (chrome.runtime.lastError) {
+                console.error('[startMessaging] Storage set error:', chrome.runtime.lastError);
+            } else {
+                console.log('[startMessaging] Storage set successfully');
+            }
+        });
+        refreshMessagingTodayCountIfStale();
+        console.log('[startMessaging] Scheduling next messaging run in', messagingNextDelay, 'ms');
+        scheduleNextMessaging(messagingNextDelay);
+        sendResponse({ success: true });
+    }
+
+    else if (request.action === "stopMessaging") {
+        console.log('[stopMessaging] Stopping auto-messaging service');
+        messagingForceStop = true; // Set global stop flag
+        isMessagingRunning = false;
+        messagingNextFireTime = null;
+        messagingStartedAt = null;
+        isMessagingProcessingTick = false; // Force stop any ongoing processing
+
+        // Clear ALL messaging alarms
+        try {
+            chrome.alarms.clear('autoMessagingTick', () => {
+                if (chrome.runtime.lastError) {
+                    console.warn('[stopMessaging] Error clearing messaging alarm:', chrome.runtime.lastError.message);
+                } else {
+                    console.log('[stopMessaging] Successfully cleared messaging alarm');
+                }
+            });
+        } catch (e) {
+            console.warn('[stopMessaging] Failed to clear messaging alarms:', e);
+        }
+
+        // Force close any active messaging tabs and clear active task
+        (async () => {
+            try {
+                const active = await getActiveMessagingTask();
+                if (active && active.tabId) {
+                    console.log('[stopMessaging] Closing active messaging tab:', active.tabId);
+                    chrome.tabs.remove(active.tabId, () => void chrome.runtime.lastError);
+                }
+                await clearActiveMessagingTask();
+            } catch (e) {
+                console.warn('[stopMessaging] Error clearing active messaging task:', e);
+            }
+        })();
+
+        // Reset stats on Stop
+        messagingRunStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+        messagingCurrentCount = 0;
+        chrome.storage.local.set({ isMessagingRunning, messagingNextFireTime, messagingStartedAt, messagingRunStats, messagingForceStop: true, messagingCurrentCount });
+
+        console.log('[stopMessaging] Messaging service stopped successfully');
+        sendResponse({ success: true });
+    }
+
+    else if (request.action === "getMessagingStatus") {
+        refreshMessagingTodayCountIfStale();
+        refreshTotalMessageProspectsCountIfStale();
+        // Include active task and current attempt count for UI transparency
+        (async () => {
+            try {
+                await loadMessagingRecordAttempts();
+                const activeMessagingTask = await getActiveMessagingTask();
+                const messagingCurrentAttempt = activeMessagingTask ? getMessagingAttemptCount(activeMessagingTask.recordId) : 0;
+                sendResponse({
+                    isMessagingRunning,
+                    messagingNextFireTime,
+                    messagingRunStats,
+                    messagingStartedAt,
+                    messagingTodayCount,
+                    messagingLastProfileUrl,
+                    totalMessageProspects: totalMessageProspectsCount,
+                    activeMessagingTask,
+                    isMessagingProcessingTick,
+                    messagingCurrentAttempt,
+                    messagingTargetCount,
+                    messagingCurrentCount
+                });
+            } catch (_) {
+                sendResponse({
+                    isMessagingRunning,
+                    messagingNextFireTime,
+                    messagingRunStats,
+                    messagingStartedAt,
+                    messagingTodayCount,
+                    messagingLastProfileUrl,
+                    totalMessageProspects: totalMessageProspectsCount,
+                    activeMessagingTask: null,
+                    isMessagingProcessingTick,
+                    messagingCurrentAttempt: 0,
+                    messagingTargetCount,
+                    messagingCurrentCount
+                });
+            }
+        })();
+        return true; // async sendResponse
+    }
+
+    else if (request.action === "getMessagingTodayNow") {
+        // Respond after fetching to provide an immediate, accurate value
+        fetchMessagingTodayCount()
+            .then((cnt) => sendResponse({ messagingTodayCount: cnt }))
+            .catch(() => sendResponse({ messagingTodayCount }));
+        return true; // keep the message channel open for async response
+    }
+
+    else if (request.action === "getTotalMessageProspectsNow") {
+        fetchTotalMessageProspectsCount()
+            .then((count) => {
+                sendResponse({ totalMessageProspects: count });
+            })
+            .catch((err) => {
+                console.error('[getTotalMessageProspectsNow] Error:', err);
+                sendResponse({ totalMessageProspects: 0 });
+            });
+        return true;
+    }
+
+    else if (request.action === "forceResetMessagingTimer") {
+        console.log('[forceResetMessagingTimer] Manually resetting messaging timer');
+        messagingNextFireTime = Date.now() + 2000; // Reset to 2 seconds from now
+        chrome.storage.local.set({ messagingNextFireTime });
+        chrome.alarms.clear('autoMessagingTick', () => {
+            chrome.alarms.create('autoMessagingTick', { when: messagingNextFireTime });
+        });
+        sendResponse({ success: true, messagingNextFireTime });
+    }
+
+    else if (request.action === "forceResetMessagingState") {
+        console.log('[forceResetMessagingState] Force resetting messaging state');
+        // Reset all messaging state variables
+        isMessagingRunning = false;
+        messagingNextFireTime = null;
+        messagingStartedAt = null;
+        messagingForceStop = false;
+        messagingTargetCount = 0;
+        messagingCurrentCount = 0;
+        messagingRunStats = { processed: 0, successes: 0, failures: 0, lastRun: null, lastError: null };
+        isMessagingProcessingTick = false;
+
+        // Clear any pending alarms
+        chrome.alarms.clear('autoMessagingTick', () => void chrome.runtime.lastError);
+
+        // Save reset state to storage
+        chrome.storage.local.set({
+            isMessagingRunning: false,
+            messagingNextFireTime: null,
+            messagingStartedAt: null,
+            messagingForceStop: false,
+            messagingTargetCount: 0,
+            messagingCurrentCount: 0,
+            messagingRunStats
+        });
+
+        console.log('[forceResetMessagingState] Messaging state reset complete');
+        sendResponse({ success: true });
     }
 });
 
@@ -414,12 +838,71 @@ function scheduleNext(delayMs) {
     console.log('[scheduleNext] Saved nextFireTime to storage:', nextFireTime);
 }
 
+function scheduleNextMessaging(delayMs) {
+    if (!isMessagingRunning || messagingForceStop) {
+        console.log('[scheduleNextMessaging] Not scheduling - messaging service is stopped or force stopped');
+        return;
+    }
+    const safeDelay = (typeof delayMs === 'number' && isFinite(delayMs) && delayMs >= 0) ? delayMs : 2000;
+    const when = Date.now() + safeDelay;
+    messagingNextFireTime = when;
+    console.log('[scheduleNextMessaging] Setting messagingNextFireTime to:', new Date(when), 'delayMs:', delayMs, 'safeDelay:', safeDelay);
+
+    // Validate the calculated time
+    if (when > Date.now() + 24 * 60 * 60 * 1000) { // More than 24 hours in the future
+        console.error('[scheduleNextMessaging] ERROR: Calculated time is too far in the future:', new Date(when), 'delayMs:', delayMs, 'safeDelay:', safeDelay);
+        // Reset to a safe value
+        messagingNextFireTime = Date.now() + 2000;
+        chrome.storage.local.set({ messagingNextFireTime });
+        console.log('[scheduleNextMessaging] Reset to safe value:', new Date(messagingNextFireTime));
+        return;
+    }
+
+    try {
+        console.log('[scheduleNextMessaging] Clearing existing messaging alarm');
+        chrome.alarms.clear('autoMessagingTick', () => {
+            if (chrome.runtime.lastError) {
+                console.warn('[scheduleNextMessaging] Error clearing messaging alarm:', chrome.runtime.lastError);
+            } else {
+                console.log('[scheduleNextMessaging] Messaging alarm cleared successfully');
+            }
+            if (!chrome.alarms || typeof chrome.alarms.create !== 'function') {
+                console.warn('[alarms] API not available in this context');
+                return;
+            }
+            console.log('[scheduleNextMessaging] Creating new messaging alarm for:', new Date(when));
+            chrome.alarms.create('autoMessagingTick', { when: when }, () => {
+                if (chrome.runtime.lastError) {
+                    console.error('[scheduleNextMessaging] Error creating messaging alarm:', chrome.runtime.lastError);
+                } else {
+                    console.log('[scheduleNextMessaging] Messaging alarm created successfully');
+                }
+            });
+        });
+    } catch (e) {
+        console.error('Failed to schedule messaging alarm', e);
+    }
+    chrome.storage.local.set({ messagingNextFireTime });
+    console.log('[scheduleNextMessaging] Saved messagingNextFireTime to storage:', messagingNextFireTime);
+}
+
 async function processRecords() {
     console.log('[processRecords] Called, current state:', { isRunning, forceStop, isProcessingTick });
     if (!isRunning || forceStop) {
         console.log('[processRecords] Service is stopped or force stopped, not processing');
         return;
     }
+
+    // Check if we've reached the target count
+    if (commentingCurrentCount >= commentingTargetCount) {
+        console.log('[processRecords] Reached target count', commentingCurrentCount, 'of', commentingTargetCount, '- stopping commenting');
+        isRunning = false;
+        nextFireTime = null;
+        startedAt = null;
+        chrome.storage.local.set({ isRunning, nextFireTime, startedAt, runStats });
+        return;
+    }
+
     if (isProcessingTick) {
         console.log('[tick] already processing; skipping');
         return;
@@ -766,12 +1249,16 @@ async function handleCommentSuccess(record, postUrl) {
         runStats.successes += 1;
         runStats.lastRun = Date.now();
         runStats.lastError = null;
-        
+
+        // Increment commenting current count
+        commentingCurrentCount += 1;
+        console.log('[finalize] Commenting progress:', commentingCurrentCount, 'of', commentingTargetCount);
+
         // Track the last successful post URL
         lastPostUrl = postUrl;
         todayCount += 1;
         lastCountAt = Date.now();
-        chrome.storage.local.set({ todayCount, lastCountAt, lastPostUrl });
+        chrome.storage.local.set({ todayCount, lastCountAt, lastPostUrl, commentingCurrentCount });
         
         // Clear active task on success
         await clearActiveTask();
@@ -795,6 +1282,287 @@ async function handleCommentSuccess(record, postUrl) {
         chrome.storage.local.set({ runStats });
         isProcessingTick = false;
     }
+}
+
+async function processMessagingRecords() {
+    console.log('[processMessagingRecords] Called, current state:', { isMessagingRunning, messagingForceStop, isMessagingProcessingTick });
+    if (!isMessagingRunning || messagingForceStop) {
+        console.log('[processMessagingRecords] Messaging service is stopped or force stopped, not processing');
+        return;
+    }
+    if (isMessagingProcessingTick) {
+        console.log('[messagingTick] already processing; skipping');
+        return;
+    }
+
+    // Check if we've reached the target count
+    if (messagingCurrentCount >= messagingTargetCount) {
+        console.log('[processMessagingRecords] Reached target count', messagingCurrentCount, 'of', messagingTargetCount, '- stopping messaging');
+        isMessagingRunning = false;
+        messagingNextFireTime = null;
+        messagingStartedAt = null;
+        chrome.storage.local.set({ isMessagingRunning, messagingNextFireTime, messagingStartedAt });
+        return;
+    }
+
+    isMessagingProcessingTick = true;
+    console.log('[processMessagingRecords] Starting to process messaging records');
+
+    // Clear any pending alarm to avoid re-entry while we work
+    try { chrome.alarms.clear('autoMessagingTick', () => void chrome.runtime.lastError); } catch {}
+
+    console.log('[processMessagingRecords] Fetching next pending message record...');
+
+    // Define the function inline to avoid scoping issues
+    const getNextPendingMessageRecordInline = async () => {
+        console.log('[getNextPendingMessageRecordInline] Function called!');
+        const params = new URLSearchParams();
+        if (MESSAGING_AIRTABLE_VIEW_ID) params.set('view', MESSAGING_AIRTABLE_VIEW_ID);
+        params.set('pageSize', '1');
+        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${MESSAGING_AIRTABLE_TABLE_ID}?${params.toString()}`;
+        console.log('[getNextPendingMessageRecordInline] Making API call...');
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' } });
+        const data = await response.json();
+        console.log('[getNextPendingMessageRecordInline] API response received');
+
+        if (!data.records) {
+            console.error("[getNextPendingMessageRecordInline] No records in response");
+            return null;
+        }
+        return data.records.length > 0 ? data.records[0] : null;
+    };
+
+    let record;
+    try {
+        record = await getNextPendingMessageRecordInline();
+        console.log('[processMessagingRecords] Record fetched:', record ? record.id : 'null');
+    } catch (fetchError) {
+        console.error('[processMessagingRecords] Error fetching record:', fetchError);
+        // Mark this as a failure and try again later
+        messagingRunStats.failures += 1;
+        messagingRunStats.lastRun = Date.now();
+        messagingRunStats.lastError = `Fetch error: ${fetchError.message}`;
+
+        // Schedule retry in 30 seconds
+        messagingNextDelay = 30000;
+        messagingNextFireTime = Date.now() + messagingNextDelay;
+        chrome.storage.local.set({ messagingRunStats, messagingNextFireTime, messagingCurrentCount });
+        scheduleNextMessaging(messagingNextDelay);
+
+        isMessagingProcessingTick = false;
+        return;
+    }
+    if (record) {
+        console.log('[processMessagingRecords] Message record details:', { id: record.id, profileUrl: record.fields['LinkedinURL'], messageText: record.fields['Message'] });
+    }
+
+    if (!record) {
+        console.log("No pending message records. Will check again later.");
+        messagingRunStats.lastRun = Date.now();
+        messagingRunStats.lastError = null;
+        if (isMessagingRunning) {
+            messagingNextDelay = getRandomDelay(); // Random delay between 5 and 7 minutes
+            messagingNextFireTime = Date.now() + messagingNextDelay;
+            chrome.storage.local.set({ messagingRunStats, messagingNextFireTime });
+            scheduleNextMessaging(messagingNextDelay);
+            isMessagingProcessingTick = false;
+        } else {
+            chrome.storage.local.set({ messagingRunStats });
+            isMessagingProcessingTick = false;
+        }
+        return;
+    }
+
+    // Validate that the record has required fields
+    const profileUrl = record.fields["LinkedinURL"];
+    const messageText = record.fields["Message"];
+
+    if (!profileUrl || !messageText) {
+        console.warn(`Message record ${record.id} missing required fields:`, {
+            hasProfileUrl: !!profileUrl,
+            hasMessageText: !!messageText,
+            fields: record.fields
+        });
+
+        // Mark this record as done to avoid getting stuck on it
+        try {
+            await markMessageRecordDone(record.id, MESSAGING_CONFIG);
+            console.log(`Marked incomplete message record ${record.id} as done to avoid getting stuck`);
+        } catch (e) {
+            console.error(`Failed to mark incomplete message record ${record.id} as done:`, e);
+        }
+
+        // Schedule next attempt
+        if (isMessagingRunning) {
+            messagingNextDelay = 30 * 1000; // Try again in 30 seconds
+            messagingNextFireTime = Date.now() + messagingNextDelay;
+            chrome.storage.local.set({ messagingRunStats, messagingNextFireTime });
+            scheduleNextMessaging(messagingNextDelay);
+        }
+        isMessagingProcessingTick = false;
+        return;
+    }
+
+    console.log(`Processing LinkedIn profile for messaging: ${profileUrl}`);
+
+    // Track attempts for this record and auto-skip after too many failures
+    await loadMessagingRecordAttempts();
+    const attempts = getMessagingAttemptCount(record.id) + 1;
+    setMessagingAttemptCount(record.id, attempts);
+    await saveMessagingRecordAttempts();
+    console.log(`[messagingAttempts] Record ${record.id} attempt #${attempts}`);
+    if (attempts > MAX_ATTEMPTS_PER_RECORD) {
+        console.warn(`[messagingAttempts] Exceeded max attempts for ${record.id}. Marking as done and skipping.`);
+        try {
+            await markMessageRecordDone(record.id, MESSAGING_CONFIG);
+        } catch (e) {
+            console.warn('Failed to mark message as done after max attempts', e);
+        }
+        clearMessagingAttemptCount(record.id);
+        await saveMessagingRecordAttempts();
+        if (isMessagingRunning) {
+            messagingNextDelay = getRandomDelay();
+            messagingNextFireTime = Date.now() + messagingNextDelay;
+            chrome.storage.local.set({ messagingNextFireTime });
+            scheduleNextMessaging(messagingNextDelay);
+        }
+        isMessagingProcessingTick = false;
+        return;
+    }
+
+    // Persist the active messaging task immediately to avoid duplicate opens on SW restart
+    await setActiveMessagingTask({ recordId: record.id, profileUrl, startedAt: Date.now() });
+
+    // First, try to send message by opening the profile in a new tab
+    console.log('[messaging] Opening profile for messaging:', profileUrl);
+
+    try {
+        const tab = await chrome.tabs.create({
+            url: profileUrl,
+            active: false // Don't focus the tab
+        });
+
+        console.log('[messaging] Created tab for messaging:', tab.id, 'URL:', profileUrl);
+
+        // Update the active task with tab ID
+        await setActiveMessagingTask({ recordId: record.id, profileUrl, tabId: tab.id, startedAt: Date.now() });
+
+        // Wait for page to load, then inject content script
+        setTimeout(async () => {
+            try {
+                // Inject content script into the tab
+                await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    files: ['src/content.js']
+                });
+
+                // Send message to content script to handle messaging
+                chrome.tabs.sendMessage(tab.id, {
+                    action: "sendMessage",
+                    messageText,
+                    profileUrl
+                });
+
+                // Set up response listener
+                const onResponse = (response, sender) => {
+                    if (sender.tab && sender.tab.id === tab.id) {
+                        chrome.runtime.onMessage.removeListener(onResponse);
+                        handleMessagingResponse(response, record.id, tab.id);
+                    }
+                };
+                chrome.runtime.onMessage.addListener(onResponse);
+
+                // Set a timeout to handle cases where messaging fails
+                setTimeout(async () => {
+                    try {
+                        const active = await getActiveMessagingTask();
+                        if (active && active.tabId === tab.id && active.recordId === record.id) {
+                            console.log('[messagingTimeout] Messaging timeout reached for tab', tab.id, 'record', record.id);
+                            await handleMessagingResponse({ success: false, error: 'Timeout' }, record.id, tab.id);
+                        } else {
+                            console.log('[messagingTimeout] Active messaging task not found or different record, skipping timeout handling');
+                        }
+                    } catch (e) {
+                        console.error('[messagingTimeout] Error handling timeout:', e);
+                    }
+                }, 60000); // 60 second timeout for messaging
+
+            } catch (e) {
+                console.error('[messaging] Error setting up messaging in tab:', e);
+                await handleMessagingResponse({ success: false, error: String(e) }, record.id, tab.id);
+            }
+        }, 3000); // Wait 3 seconds for page load
+
+    } catch (e) {
+        console.error('[messaging] Error creating tab:', e);
+        await handleMessagingResponse({ success: false, error: String(e) }, record.id, null);
+    }
+}
+
+async function handleMessagingResponse(response, recordId, tabId) {
+    console.log('[handleMessagingResponse] Response:', response, 'recordId:', recordId, 'tabId:', tabId);
+
+    try {
+        if (response && response.success) {
+            console.log('[handleMessagingResponse] Messaging successful for record:', recordId);
+            messagingRunStats.successes += 1;
+            messagingCurrentCount += 1;
+            messagingLastProfileUrl = response.profileUrl || null;
+
+            // Mark record as done
+            try {
+                await markMessageRecordDone(recordId, MESSAGING_CONFIG);
+                console.log('[handleMessagingResponse] Marked message record as done:', recordId);
+            } catch (e) {
+                console.error('[handleMessagingResponse] Error marking message record as done:', e);
+            }
+
+        } else {
+            console.log('[handleMessagingResponse] Messaging failed for record:', recordId, 'error:', response?.error);
+            messagingRunStats.failures += 1;
+            messagingRunStats.lastError = response?.error || 'Unknown error';
+        }
+
+        messagingRunStats.processed += 1;
+        messagingRunStats.lastRun = Date.now();
+
+        // Clear the active task
+        await clearActiveMessagingTask();
+
+        // Close the tab
+        if (tabId) {
+            try {
+                chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
+                console.log('[handleMessagingResponse] Closed messaging tab:', tabId);
+            } catch (e) {
+                console.warn('[handleMessagingResponse] Error closing messaging tab:', e);
+            }
+        }
+
+        // Schedule next messaging if still running and haven't reached target
+        if (isMessagingRunning && messagingCurrentCount < messagingTargetCount) {
+            // Use fixed 3-5 minute delay between messages
+            messagingNextDelay = (3 + Math.random() * 2) * 60 * 1000; // 3-5 minutes in milliseconds
+            messagingNextFireTime = Date.now() + messagingNextDelay;
+            chrome.storage.local.set({ messagingRunStats, messagingNextFireTime, messagingCurrentCount });
+            scheduleNextMessaging(messagingNextDelay);
+            console.log(`[handleMessagingResponse] Scheduled next message in ${Math.round(messagingNextDelay/1000/60)} minutes`);
+        } else {
+            // Stop if we've reached the target or service was stopped
+            isMessagingRunning = false;
+            messagingNextFireTime = null;
+            messagingStartedAt = null;
+            chrome.storage.local.set({ isMessagingRunning, messagingNextFireTime, messagingStartedAt, messagingRunStats, messagingCurrentCount });
+        }
+
+    } catch (err) {
+        console.error('[handleMessagingResponse] Error in response handling:', err);
+        messagingRunStats.lastRun = Date.now();
+        messagingRunStats.lastError = String(err && err.message ? err.message : err);
+        chrome.storage.local.set({ messagingRunStats });
+    }
+
+    isMessagingProcessingTick = false;
 }
 
 // Only keep these ONCE at the end of your file:
@@ -917,6 +1685,8 @@ async function getNextPendingRecord() {
     return data.records.length > 0 ? data.records[0] : null;
 }
 
+// Function moved inline to avoid scoping issues
+
 async function markRecordDone(recordId, tabId) {
     const { AIRTABLE_API_KEY } = CONFIG || {};
     const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}/${recordId}`;
@@ -998,6 +1768,74 @@ async function markRecordDone(recordId, tabId) {
         throw error;
     }
 }
+
+async function markMessageRecordDone(recordId) {
+    console.log('[markMessageRecordDone] Marking record as done:', recordId);
+
+    try {
+        const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${MESSAGING_AIRTABLE_TABLE_ID}/${recordId}`;
+        const now = new Date();
+
+        console.log('[markMessageRecordDone] Updating record with Message Done and Message Sent Time');
+
+        // Try different timestamp formats for Airtable compatibility
+        const timestampFormats = [
+            now.toISOString(),           // "2026-01-19T17:45:30.000Z"
+            now.toISOString().slice(0, -1), // "2026-01-19T17:45:30.000" (without Z)
+            now.toISOString().split('T')[0], // "2026-01-19" (date only)
+            Math.floor(now.getTime() / 1000), // Unix timestamp in seconds
+            now.getTime() // Unix timestamp in milliseconds
+        ];
+
+        let updateData;
+        let success = false;
+
+        // Try each timestamp format until one works
+        for (let i = 0; i < timestampFormats.length; i++) {
+            const timestamp = timestampFormats[i];
+            console.log(`[markMessageRecordDone] Trying timestamp format ${i + 1}:`, timestamp);
+
+            updateData = {
+                fields: {
+                    "Message Done": true,
+                    "Message Sent Time": timestamp
+                }
+            };
+
+            const response = await fetch(url, {
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${AIRTABLE_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(updateData)
+            });
+
+            if (response.ok) {
+                console.log(`[markMessageRecordDone] Success with format ${i + 1}:`, timestamp);
+                success = true;
+                break;
+            } else {
+                const errorText = await response.text();
+                console.log(`[markMessageRecordDone] Format ${i + 1} failed:`, response.status, errorText);
+                // Continue to next format
+            }
+        }
+
+        if (!success) {
+            console.error('[markMessageRecordDone] All timestamp formats failed');
+            return false;
+        }
+
+        console.log('[markMessageRecordDone] Successfully marked record as done:', recordId);
+        return true;
+
+    } catch (error) {
+        console.error('[markMessageRecordDone] Error marking record as done:', error);
+        return false;
+    }
+}
+
     // Periodic timer validation to prevent corruption
     setInterval(() => {
         const now = Date.now();
@@ -1026,13 +1864,15 @@ async function markRecordDone(recordId, tabId) {
     // Handle the alarm tick to resume work even if the service worker was suspended
     console.log('[background] Setting up alarm listener...');
     chrome.alarms.onAlarm.addListener((alarm) => {
-        console.log('[alarm] Alarm fired:', alarm.name, 'current state:', { isRunning, forceStop });
+        console.log('[alarm] Alarm fired:', alarm.name, 'current state:', { isRunning, forceStop, isMessagingRunning, messagingForceStop });
+
+        // Handle comment tick
         if (alarm && alarm.name === 'autoCommentTick') {
             if (!isRunning || forceStop) {
-                console.log('[alarm] Ignoring alarm - service is stopped or force stopped');
+                console.log('[alarm] Ignoring comment alarm - service is stopped or force stopped');
                 return;
             }
-            console.log('[alarm] Processing records...');
+            console.log('[alarm] Processing comment records...');
             processRecords().catch(err => {
                 console.error('processRecords error', err);
                 // Only schedule next if still running and not force stopped
@@ -1047,7 +1887,33 @@ async function markRecordDone(recordId, tabId) {
                     chrome.storage.local.set({ nextFireTime });
                     scheduleNext(nextDelay);
                 } else {
-                    console.log('[alarm] Not scheduling next - service was stopped or force stopped');
+                    console.log('[alarm] Not scheduling next comment - service was stopped or force stopped');
+                }
+            });
+        }
+
+        // Handle messaging tick
+        else if (alarm && alarm.name === 'autoMessagingTick') {
+            if (!isMessagingRunning || messagingForceStop) {
+                console.log('[alarm] Ignoring messaging alarm - service is stopped or force stopped');
+                return;
+            }
+            console.log('[alarm] Processing messaging records...');
+            processMessagingRecords().catch(err => {
+                console.error('processMessagingRecords error', err);
+                // Only schedule next if still running and not force stopped
+                if (isMessagingRunning && !messagingForceStop && messagingCurrentCount < messagingTargetCount) {
+                    messagingRunStats.failures += 1;
+                    messagingRunStats.lastRun = Date.now();
+                    messagingRunStats.lastError = String(err && err.message ? err.message : err);
+                    chrome.storage.local.set({ messagingRunStats });
+                    // schedule a retry with a fresh delay to avoid tight loop
+                    messagingNextDelay = getRandomDelay();
+                    messagingNextFireTime = Date.now() + messagingNextDelay;
+                    chrome.storage.local.set({ messagingNextFireTime });
+                    scheduleNextMessaging(messagingNextDelay);
+                } else {
+                    console.log('[alarm] Not scheduling next messaging - service was stopped, force stopped, or target reached');
                 }
             });
         }
